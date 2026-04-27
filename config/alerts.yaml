@@ -1,0 +1,21 @@
+# Alert thresholds and dispatch behavior.
+# Telegram bot token + chat_id live in .env (NOT here).
+
+# Quiet hours: no Telegram pushes during this window (local time).
+quiet_hours_start: "22:00"
+quiet_hours_end: "07:00"
+
+# Same alert_key cannot be re-fired within this window.
+dedup_window_hours: 6
+
+# ---- Position-defense alerts (P2) ----
+profit_take_50: true             # alert when short premium decays 50%
+profit_take_80: true             # alert when short premium decays 80%
+delta_warning: 0.40              # short option Delta crosses this → warn
+delta_critical: 0.50             # crosses this → critical alert
+stop_loss_multiplier: 2.0        # current mark ≥ 2× original premium → stop-loss ping (0 = off)
+
+# ---- Opportunity alerts (B-mode push) ----
+iv_spike_pct: 30.0               # IV spikes >30% over 5d baseline → push opportunity
+earnings_conflict_dte: 7         # open option expiring within 7d of earnings → warn
+roc_threshold_annual: 0.40       # passive scan finds annualized ROC > 40% → push

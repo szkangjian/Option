@@ -1,0 +1,47 @@
+# Intent presets — filter boxes applied to option chain scans.
+#
+# Hard global rule (enforced in code, NOT toggleable here): every intent
+# excludes contracts whose DTE crosses an earnings date.
+#
+# CORE_HOLD and WATCH have no preset because they generate no recommendations.
+
+INCOME:                          # Hold + collect rent (CC)
+  side: CALL
+  delta_max: 0.20
+  # 25-55 always captures exactly the next 3rd-Friday monthly, regardless of
+  # where in the cycle "today" falls. weekly_ok=true on a symbol layers in
+  # weeklies on top.
+  dte_min: 25
+  dte_max: 55
+  rank_by: annualized_roc
+  # High-IV names (URA, GME) need wide upper window to find Delta ≤ 0.20 strikes.
+  strike_window_pct: 0.40
+  max_strikes_per_side: 30
+  exclude_earnings_dte: true
+  top_n: 5
+
+TRADE:                           # Short-term arbitrage (CC)
+  side: CALL
+  delta_min: 0.25
+  delta_max: 0.35
+  dte_min: 7
+  dte_max: 21
+  rank_by: premium_absolute
+  # Narrow window — TRADE plays near-the-money, no need for far OTM.
+  strike_window_pct: 0.15
+  max_strikes_per_side: 12
+  exclude_earnings_dte: true
+  top_n: 5
+
+WANT_TO_OWN:                     # CSP at target buy price
+  side: PUT
+  delta_max: 0.30
+  # Same 25-55 rule as INCOME — captures the next monthly cleanly.
+  dte_min: 25
+  dte_max: 55
+  strike_max_vs_target: 1.00     # strike must be <= target_buy_price * 1.00
+  rank_by: annualized_roc
+  strike_window_pct: 0.30
+  max_strikes_per_side: 20
+  exclude_earnings_dte: true
+  top_n: 5

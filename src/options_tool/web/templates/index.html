@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>options-tool</title>
+  <script src="https://unpkg.com/htmx.org@2.0.3"></script>
+  <script defer src="https://unpkg.com/alpinejs@3.14.1"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    .htmx-indicator { display: none; }
+    .htmx-request .htmx-indicator { display: inline-block; }
+    .htmx-request.htmx-indicator { display: inline-block; }
+    .row-selected { background: rgb(241 245 249); }
+    [x-cloak] { display: none !important; }
+    .spinner {
+      display: inline-block;
+      width: 0.85em; height: 0.85em;
+      border: 2px solid currentColor;
+      border-right-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      vertical-align: -0.15em;
+      margin-left: 0.4em;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+  <script>
+    // Server-driven modal close: PATCH/POST returns HX-Trigger: closeModal.
+    // Bind to document (not document.body) — this script runs in <head>,
+    // before <body> is parsed, so document.body would be null here.
+    document.addEventListener('closeModal', () => {
+      const root = document.getElementById('modal-root');
+      if (root) root.innerHTML = '';
+    });
+    // Refresh the right detail pane after a PATCH so intent / target / wheel
+    // changes are visible immediately (Run advisor button etc).
+    document.addEventListener('refreshDetail', (e) => {
+      const symbol = e.detail && e.detail.value;
+      if (symbol) htmx.ajax('GET', '/symbols/' + symbol, '#detail-pane');
+    });
+  </script>
+</head>
+<body class="bg-slate-50 text-slate-900 antialiased">
+  <header class="border-b border-slate-200 bg-white">
+    <div class="px-4 py-3 flex items-center justify-between">
+      <h1 class="text-base font-semibold tracking-tight">
+        options-tool <span class="text-slate-400 font-normal">— IBKR CC/CSP advisor</span>
+      </h1>
+      <div class="flex items-center gap-3">
+        <button
+          class="text-sm rounded-md bg-slate-900 text-white px-3 py-1.5 hover:bg-slate-700 disabled:opacity-60 disabled:cursor-wait"
+          hx-post="/sync-positions"
+          hx-target="#symbol-list"
+          hx-disabled-elt="this"
+        >
+          <span>Sync IBKR</span>
+          <span class="htmx-indicator spinner"></span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="grid grid-cols-12 gap-0 h-[calc(100vh-49px)]">
+    <!-- Left pane: symbol list -->
+    <aside class="col-span-4 lg:col-span-3 border-r border-slate-200 bg-white overflow-y-auto">
+      <div id="symbol-list">
+        {% include "partials/symbol_list.html" %}
+      </div>
+    </aside>
+
+    <!-- Right pane: detail (default = dashboard) -->
+    <section class="col-span-8 lg:col-span-9 overflow-y-auto p-6"
+             id="detail-pane">
+      {% include "partials/dashboard.html" %}
+    </section>
+  </main>
+
+  <!-- Modal root: filled by HTMX swaps; cleared by closeModal trigger -->
+  <div id="modal-root"></div>
+</body>
+</html>

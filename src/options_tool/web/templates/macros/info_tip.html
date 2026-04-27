@@ -1,0 +1,59 @@
+{#
+  Reusable explanation tooltip for "what does this label/decision mean?"
+  Renders a small ⓘ glyph; hover OR click opens a dark popover with the
+  explanation text (which may contain plain text plus inline HTML — the
+  caller is responsible for trusted content).
+
+  Usage:
+    {% from "macros/info_tip.html" import info_tip %}
+    {{ info_tip("STOP_LOSS = 当前 mark ≥ 2× 开仓 premium。") }}
+    {{ info_tip("...", glyph="?") }}                 # alternate glyph
+    {{ info_tip("...", width="w-96") }}              # wider popover
+
+  Why position:fixed (not absolute)
+  ---------------------------------
+  Many of our tables wrap cells in `overflow: hidden` for rounded corners.
+  An absolutely-positioned popover would get clipped at the table edge — so
+  the *last* row's ⓘ would have its tooltip cut off at the table bottom.
+  We compute the icon's viewport coords on open and position the popover
+  with `position: fixed`, which escapes every ancestor's overflow box.
+
+  The popover anchors its top-right corner to the icon's bottom-right (so
+  it grows down-and-left). When the icon sits near the bottom of the
+  viewport, it flips to grow up-and-left instead — handled in `place()`.
+
+  Hover (desktop) and click (mobile / pinning) both open; mouseleave or
+  click-outside closes. Each instance has its own x-data, so HTMX inner
+  swaps don't leak open state.
+#}
+{% macro info_tip(text, glyph="ⓘ", width="w-72") %}
+<span class="relative inline-flex align-middle"
+      x-data="{
+        open: false,
+        top: 0, left: 0,
+        flipUp: false,
+        place(el) {
+          const r = el.getBoundingClientRect();
+          // Anchor: prefer below-and-left; flip above if not enough room.
+          const estHeight = 160;
+          this.flipUp = (window.innerHeight - r.bottom) < estHeight;
+          this.top = this.flipUp ? r.top - 4 : r.bottom + 4;
+          this.left = r.right;
+        }
+      }"
+      @mouseenter="place($el); open = true"
+      @mouseleave="open = false"
+      @click.stop="place($el); open = !open"
+      @click.outside="open = false">
+  <button type="button"
+          class="text-[11px] leading-none text-slate-400 hover:text-slate-700 cursor-help select-none ml-0.5"
+          aria-label="解释"
+          tabindex="-1">{{ glyph }}</button>
+  <span x-show="open" x-cloak
+        :style="`top: ${top}px; left: ${left}px; transform: translateX(-100%) ${flipUp ? 'translateY(-100%)' : ''}`"
+        class="fixed z-[100] {{ width }} p-2 bg-slate-800 text-slate-100 text-xs leading-relaxed rounded shadow-lg ring-1 ring-slate-700 whitespace-normal text-left pointer-events-none">
+    {# trust the caller — explanation text is template-author-controlled and may contain inline HTML like <b> / <br> #}
+    {{ text|safe }}
+  </span>
+</span>
+{% endmacro %}

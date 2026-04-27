@@ -1,0 +1,26 @@
+# IB Gateway connection targets — copy to accounts.yaml and fill in.
+#
+# One entry per IBKR account. Each entry corresponds to one (host, port)
+# IB Gateway endpoint and one IBKR account_code that endpoint exposes.
+#
+# Multiple accounts: each runs on its own Gateway login on a different
+# port (e.g., 4001 / 4002). Add a second entry below when ready.
+#
+# client_id must be unique per concurrent connection on the same Gateway.
+# Use 7878 / 7879 etc. so they do not collide with TWS or other tools.
+
+accounts:
+  - alias: main
+    host: 127.0.0.1
+    port: 4001
+    client_id: 7878
+    account_code: UXXXXXXX
+    enabled: true
+
+  # Uncomment and edit when second gateway is running:
+  # - alias: secondary
+  #   host: 127.0.0.1
+  #   port: 4002
+  #   client_id: 7879
+  #   account_code: UXXXXXXX
+  #   enabled: true

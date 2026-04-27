@@ -1,0 +1,159 @@
+{#
+  Dashboard shown in the right pane when no symbol is selected.
+  Two sections:
+    1. 需要关注的持仓 — every non-HOLD short option, severity-ordered
+    2. Top opportunities — latest rank-1 recommendations across all scannable symbols
+#}
+{% from "macros/info_tip.html" import info_tip %}
+<div class="space-y-6">
+  <div>
+    <h2 class="text-sm font-semibold text-slate-700 mb-2 flex items-center gap-2">
+      <span>需要关注的持仓</span>
+      <span class="text-xs font-normal text-slate-400">
+        {% if dashboard.attention %}{{ dashboard.attention|length }} 条{% else %}全部 HOLD{% endif %}
+      </span>
+    </h2>
+    {% if dashboard.attention %}
+    <table class="w-full text-sm border border-slate-200 rounded-md overflow-hidden">
+      <thead class="bg-slate-50 text-slate-500 text-xs">
+        <tr>
+          <th class="text-left px-3 py-1.5 font-medium whitespace-nowrap">
+            Action
+            {{ info_tip(
+              "Position Advisor 给每个 short option 的建议（按优先级，先匹配先返回）：<br>"
+              "<b>CLOSE</b> 已衰减 ≥ 80% — 利润大头到手，剩下不值再扛。<br>"
+              "<b>ROLL</b> 财报冲突 / Δ critical / 临近到期且 Δ warn — 防御性展期。<br>"
+              "<b>STOP_LOSS</b> 当前 mark ≥ 2× 开仓 premium — 已亏过标准风险预算，自行决定。<br>"
+              "<b>HOLD</b> 没有触发任何规则。"
+            ) }}
+          </th>
+          <th class="text-left px-3 py-1.5 font-medium">Symbol</th>
+          <th class="text-left px-3 py-1.5 font-medium">Account</th>
+          <th class="text-left px-3 py-1.5 font-medium">Leg</th>
+          <th class="text-right px-3 py-1.5 font-medium whitespace-nowrap">
+            DTE
+            {{ info_tip("Days To Expiry — 距到期还有几天。短 DTE (≤ 7) 会让 50% 利润 / Δ 警告升级成行动信号。") }}
+          </th>
+          <th class="text-right px-3 py-1.5 font-medium whitespace-nowrap">
+            Δ
+            {{ info_tip(
+              "Delta —  期权价格对标的价格变动 1 美元的敏感度，也粗略等于到期被行权的概率。<br>"
+              "卖方角度：|Δ| 越高，越接近 ATM，越危险。<br>"
+              "工具阈值：warn 0.40，critical 0.50。"
+            ) }}
+          </th>
+          <th class="text-left px-3 py-1.5 font-medium">Reason</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for a in dashboard.attention %}
+        <tr class="border-t border-slate-100 hover:bg-slate-50 cursor-pointer"
+            hx-get="/symbols/{{ a.symbol }}"
+            hx-target="#detail-pane"
+            hx-swap="innerHTML">
+          <td class="px-3 py-1.5 whitespace-nowrap">
+            <span class="px-1.5 py-0.5 rounded text-[10px] font-semibold ring-1 ring-inset
+              {% if a.label == 'CLOSE' %}bg-emerald-100 text-emerald-800 ring-emerald-200
+              {% elif a.label == 'STOP_LOSS' %}bg-orange-100 text-orange-800 ring-orange-200
+              {% elif a.label == 'ROLL' and a.severity == 'critical' %}bg-rose-100 text-rose-800 ring-rose-200
+              {% elif a.label == 'ROLL' %}bg-amber-100 text-amber-800 ring-amber-200
+              {% else %}bg-slate-100 text-slate-600 ring-slate-200{% endif %}"
+              title="{{ a.reason }}">
+              {{ a.label }}
+            </span>
+            {{ info_tip(a.reason) }}
+          </td>
+          <td class="px-3 py-1.5 font-semibold">{{ a.symbol }}</td>
+          <td class="px-3 py-1.5 font-mono text-xs text-slate-500">{{ a.account }}</td>
+          <td class="px-3 py-1.5 font-mono text-xs">
+            <span class="
+              {% if a.right == 'C' %}text-emerald-700{% else %}text-sky-700{% endif %}"
+              title="{% if a.right == 'C' %}Call — 看涨期权{% else %}Put — 看跌期权{% endif %}">
+              {{ a.right }}{{ "%g"|format(a.strike) }}
+            </span>
+            <span class="text-slate-400">{{ a.expiry.isoformat() }}</span>
+          </td>
+          <td class="text-right px-3 py-1.5 tabular-nums">{{ a.dte }}</td>
+          <td class="text-right px-3 py-1.5 tabular-nums">
+            {% if a.delta is not none %}{{ "%.2f"|format(a.delta) }}{% else %}—{% endif %}
+          </td>
+          <td class="px-3 py-1.5 text-xs text-slate-600">{{ a.reason }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="text-xs text-slate-400 border border-dashed border-slate-200 rounded-md px-4 py-6 text-center">
+      当前所有短仓均为 HOLD，没事。
+    </div>
+    {% endif %}
+  </div>
+
+  <div>
+    <h2 class="text-sm font-semibold text-slate-700 mb-2 flex items-center gap-2">
+      <span>Top opportunities</span>
+      <span class="text-xs font-normal text-slate-400">
+        全部 sell-to-open（CC / CSP）· 最近 24h · rank-1 · 推送阈值 {{ (dashboard.roc_threshold * 100)|round(0, 'floor')|int }}% 年化
+      </span>
+    </h2>
+    {% if dashboard.opportunities %}
+    <table class="w-full text-sm border border-slate-200 rounded-md overflow-hidden">
+      <thead class="bg-slate-50 text-slate-500 text-xs">
+        <tr>
+          <th class="text-left px-3 py-1.5 font-medium">Symbol</th>
+          <th class="text-left px-3 py-1.5 font-medium whitespace-nowrap">
+            Intent
+            {{ info_tip(
+              "每只标的的策略意图，决定 Opening Advisor 用哪套 filter preset：<br>"
+              "<b>INCOME</b> 收 CC，Δ ≤ 0.20，DTE 30–45，按年化 ROC 排。<br>"
+              "<b>TRADE</b> 收 CC，Δ 0.25–0.35，DTE 7–21，按绝对 premium 排。<br>"
+              "<b>WANT_TO_OWN</b> 卖 CSP，strike ≤ target，Δ ≤ 0.30，DTE 21–45。<br>"
+              "<b>CORE_HOLD</b> / <b>WATCH</b> 不进 advisor 扫描。"
+            ) }}
+          </th>
+          <th class="text-left px-3 py-1.5 font-medium">Leg</th>
+          <th class="text-right px-3 py-1.5 font-medium">DTE</th>
+          <th class="text-right px-3 py-1.5 font-medium">Δ</th>
+          <th class="text-right px-3 py-1.5 font-medium">Premium</th>
+          <th class="text-right px-3 py-1.5 font-medium whitespace-nowrap">
+            年化 ROC
+            {{ info_tip(
+              "Annualized Return on Collateral。<br>"
+              "CC：premium / strike × (365 / DTE)。<br>"
+              "CSP：premium / (strike × 100) × (365 / DTE)。<br>"
+              "推送阈值见副标题（默认 40%）。"
+            ) }}
+          </th>
+          <th class="text-right px-3 py-1.5 font-medium whitespace-nowrap">
+            IVR
+            {{ info_tip(
+              "IV Rank — 一年窗口内当前 IV30 的相对位置 (0–100)。<br>"
+              "<b>≥ 70</b> 高，premium 贵，特别适合卖权。<br>"
+              "<b>40–70</b> 中等。<br>"
+              "<b>&lt; 40</b> 低，谨慎卖权（可能不值得占用保证金）。"
+            ) }}
+          </th>
+          <th class="text-right px-3 py-1.5 font-medium whitespace-nowrap">
+            反馈
+            {{ info_tip(
+              "记录你对每条候选的处理：<br>"
+              "<b>采纳</b> = 你按这条建议下了单（或近似）。<br>"
+              "<b>忽略</b> = 你看过但决定不做。<br>"
+              "未来用来做 scoring 回测：你忽略的候选实际上盈利率多少？"
+            ) }}
+          </th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for o in dashboard.opportunities %}
+          {% include "partials/opportunity_row.html" %}
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="text-xs text-slate-400 border border-dashed border-slate-200 rounded-md px-4 py-6 text-center">
+      24h 内尚无 rank-1 记录 —— 等 prefetch 跑一轮。
+    </div>
+    {% endif %}
+  </div>
+</div>

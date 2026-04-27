@@ -1,0 +1,485 @@
+{% from "macros/info_tip.html" import info_tip %}
+<div class="space-y-6">
+  {% if sym and sym.intent == 'WANT_TO_OWN' and not sym.target_buy_price %}
+  <div class="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 flex items-start gap-3">
+    <span class="text-lg leading-none">⚠</span>
+    <div class="flex-1">
+      <p class="font-medium">未设置 target_buy_price</p>
+      <p class="text-xs text-amber-800 mt-0.5">
+        WANT_TO_OWN 需要 target 才能过滤 CSP（strike ≤ target）。scheduler 的 chain 预抓取对该 symbol 当前静默跳过。
+      </p>
+    </div>
+    <button
+      type="button"
+      class="text-xs rounded-md bg-amber-600 text-white px-2.5 py-1 hover:bg-amber-500 shrink-0"
+      hx-get="/symbols/{{ symbol }}/edit"
+      hx-target="#modal-root"
+      hx-swap="innerHTML"
+    >设置 target</button>
+  </div>
+  {% endif %}
+  <!-- Header -->
+  <div class="flex items-start justify-between gap-4">
+    <div class="min-w-0">
+      <div class="flex items-baseline gap-3">
+        <h2 class="text-2xl font-semibold tracking-tight font-mono">{{ symbol }}</h2>
+        {% if spot is not none %}
+        <span class="text-2xl font-semibold tabular-nums text-slate-700">${{ "%.2f"|format(spot) }}</span>
+        <span class="text-[11px] text-slate-400" title="{{ spot_at.isoformat() if spot_at else '' }}">
+          (cached)
+        </span>
+        {% else %}
+        <span class="text-xs text-slate-400">spot 未缓存 · 点 Run advisor 拉取</span>
+        {% endif %}
+      </div>
+      {% if sym %}
+      <p class="text-sm text-slate-500 mt-1 flex items-center flex-wrap gap-x-2 gap-y-1">
+        <button
+          type="button"
+          class="px-1.5 py-0.5 rounded text-[11px] font-medium ring-1 ring-inset {{ intent_color }} hover:opacity-80"
+          hx-get="/symbols/{{ symbol }}/edit"
+          hx-target="#modal-root"
+          hx-swap="innerHTML"
+          title="点击修改 intent"
+        >{{ sym.intent }}</button>
+        {% if sym.wheel_enabled %}<span class="text-amber-600">↻ wheel</span>{% endif %}
+        {% if sym.target_buy_price %}<span>· target ${{ "%.2f"|format(sym.target_buy_price) }}</span>{% endif %}
+        {% if next_earnings %}
+        <span class="text-rose-600">· earnings {{ next_earnings.isoformat() }}</span>
+        {% endif %}
+        {% if iv_stats %}
+        <span
+          class="ml-1 px-1.5 py-0.5 rounded text-[11px] font-medium tabular-nums
+            {% if iv_stats.iv_rank >= 0.7 %}bg-rose-100 text-rose-700
+            {% elif iv_stats.iv_rank >= 0.4 %}bg-amber-100 text-amber-700
+            {% else %}bg-slate-100 text-slate-600{% endif %}"
+          title="IV30 当前 {{ '%.1f'|format(iv_stats.current_iv * 100) }}% · 一年区间 [{{ '%.1f'|format(iv_stats.low * 100) }}%, {{ '%.1f'|format(iv_stats.high * 100) }}%] · 共 {{ iv_stats.window_days }} 天"
+        >IVR {{ "%.0f"|format(iv_stats.iv_rank * 100) }} · IVP {{ "%.0f"|format(iv_stats.iv_percentile * 100) }}</span>
+        {% endif %}
+        {% if sym.notes %}
+        <span class="text-slate-400">— {{ sym.notes }}</span>
+        {% endif %}
+      </p>
+      {% else %}
+      <p class="text-sm text-slate-400 mt-0.5">未跟踪。点左栏 + Add 加入。</p>
+      {% endif %}
+    </div>
+
+    {% if sym and sym.intent in ['INCOME', 'TRADE', 'WANT_TO_OWN'] %}
+    <button
+      class="text-sm rounded-md bg-emerald-600 text-white px-3 py-1.5 hover:bg-emerald-500 disabled:opacity-60 disabled:cursor-wait shrink-0"
+      hx-post="/symbols/{{ symbol }}/advise"
+      hx-target="#detail-pane"
+      hx-disabled-elt="this"
+    >
+      <span>Run advisor</span>
+      <span class="htmx-indicator spinner"></span>
+    </button>
+    {% endif %}
+  </div>
+
+  <!-- Stock holdings -->
+  {% if stocks %}
+  <section>
+    <h3 class="text-xs uppercase tracking-wide text-slate-500 mb-2">Stock holdings</h3>
+    <table class="w-full text-sm border border-slate-200 rounded-md overflow-hidden">
+      <thead class="bg-slate-50 text-slate-500 text-xs">
+        <tr>
+          <th class="text-left px-3 py-1.5 font-medium">Account</th>
+          <th class="text-right px-3 py-1.5 font-medium">Qty</th>
+          <th class="text-right px-3 py-1.5 font-medium">Avg cost</th>
+          <th class="text-right px-3 py-1.5 font-medium" title="Avg cost 减去累计期权净 premium（每股）">Adj cost</th>
+          <th class="text-right px-3 py-1.5 font-medium">Now</th>
+          <th class="text-right px-3 py-1.5 font-medium">P&L%</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in stocks %}
+        <tr class="border-t border-slate-100">
+          <td class="px-3 py-1.5 font-mono">{{ s.account }}</td>
+          <td class="text-right px-3 py-1.5">{{ s.qty|int }}</td>
+          <td class="text-right px-3 py-1.5 tabular-nums">${{ "%.2f"|format(s.avg_cost) }}</td>
+          <td class="text-right px-3 py-1.5 tabular-nums
+            {% if s.adj_cost is not none %}text-emerald-700 font-medium{% else %}text-slate-400{% endif %}"
+            {% if s.premium_per_share is not none %}title="累计期权 premium ${{ '%.2f'|format(s.premium_per_share) }}/股"{% endif %}>
+            {% if s.adj_cost is not none %}${{ "%.2f"|format(s.adj_cost) }}{% else %}—{% endif %}
+          </td>
+          <td class="text-right px-3 py-1.5 tabular-nums">
+            {% if s.current is not none %}${{ "%.2f"|format(s.current) }}{% else %}—{% endif %}
+          </td>
+          <td class="text-right px-3 py-1.5 tabular-nums font-medium
+            {% if s.pnl_pct is not none and s.pnl_pct > 0 %}text-emerald-600
+            {% elif s.pnl_pct is not none and s.pnl_pct < 0 %}text-rose-600
+            {% else %}text-slate-400{% endif %}">
+            {% if s.pnl_pct is not none %}{{ "%+.1f"|format(s.pnl_pct * 100) }}%{% else %}—{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endif %}
+
+  <!-- Open option positions -->
+  {% if opts %}
+  <section>
+    <h3 class="text-xs uppercase tracking-wide text-slate-500 mb-2">Open options</h3>
+    <table class="w-full text-sm border border-slate-200 rounded-md overflow-hidden">
+      <thead class="bg-slate-50 text-slate-500 text-xs">
+        <tr>
+          <th class="text-left px-3 py-1.5 font-medium">Account</th>
+          <th class="text-left px-3 py-1.5 font-medium">R</th>
+          <th class="text-right px-3 py-1.5 font-medium">Strike</th>
+          <th class="text-right px-3 py-1.5 font-medium" title="spot 相对 strike 偏离 %">vs spot</th>
+          <th class="text-left px-3 py-1.5 font-medium">Expiry</th>
+          <th class="text-right px-3 py-1.5 font-medium">DTE</th>
+          <th class="text-right px-3 py-1.5 font-medium">Qty</th>
+          <th class="text-right px-3 py-1.5 font-medium">Open $</th>
+          <th class="text-right px-3 py-1.5 font-medium">Now $</th>
+          <th class="text-right px-3 py-1.5 font-medium">P&L%</th>
+          <th class="text-right px-3 py-1.5 font-medium">Δ</th>
+          <th class="text-right px-3 py-1.5 font-medium" title="未平仓合约数">OI</th>
+          <th class="text-left px-3 py-1.5 font-medium" title="Position Advisor 建议（hover 看理由）">Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for o in opts %}
+        <tr class="border-t border-slate-100">
+          <td class="px-3 py-1.5 font-mono">{{ o.account }}</td>
+          <td class="px-3 py-1.5">
+            <span class="px-1 rounded text-[10px] font-medium
+              {% if o.right == 'C' %}bg-emerald-100 text-emerald-700
+              {% else %}bg-sky-100 text-sky-700{% endif %}"
+              title="{% if o.right == 'C' %}Call — 看涨期权{% else %}Put — 看跌期权{% endif %}">
+              {{ o.right }}
+            </span>
+          </td>
+          <td class="text-right px-3 py-1.5 tabular-nums">${{ "%.2f"|format(o.strike) }}</td>
+          <td class="text-right px-3 py-1.5 tabular-nums text-xs
+            {% if o.moneyness_pct is not none and o.moneyness_pct|abs < 0.05 %}text-amber-600 font-semibold
+            {% else %}text-slate-500{% endif %}">
+            {% if o.moneyness_pct is not none %}{{ "%+.1f"|format(o.moneyness_pct * 100) }}%{% else %}—{% endif %}
+          </td>
+          <td class="px-3 py-1.5 font-mono text-xs">{{ o.expiry.isoformat() }}</td>
+          <td class="text-right px-3 py-1.5">{{ o.dte }}</td>
+          <td class="text-right px-3 py-1.5 {% if o.qty < 0 %}text-rose-600{% else %}text-emerald-600{% endif %}">
+            {{ "%+d"|format(o.qty) }}
+          </td>
+          <td class="text-right px-3 py-1.5 tabular-nums">
+            {% if o.avg_open_price %}${{ "%.2f"|format(o.avg_open_price) }}{% else %}—{% endif %}
+          </td>
+          <td class="text-right px-3 py-1.5 tabular-nums">
+            {% if o.current is not none %}${{ "%.2f"|format(o.current) }}{% else %}—{% endif %}
+          </td>
+          <td class="text-right px-3 py-1.5 tabular-nums font-medium
+            {% if o.pnl_pct is not none and o.pnl_pct > 0 %}text-emerald-600
+            {% elif o.pnl_pct is not none and o.pnl_pct < 0 %}text-rose-600
+            {% else %}text-slate-400{% endif %}">
+            {% if o.pnl_pct is not none %}{{ "%+.0f"|format(o.pnl_pct * 100) }}%{% else %}—{% endif %}
+          </td>
+          <td class="text-right px-3 py-1.5 tabular-nums">
+            {% if o.delta is not none %}{{ "%.2f"|format(o.delta) }}{% else %}—{% endif %}
+          </td>
+          <td class="text-right px-3 py-1.5 tabular-nums text-slate-500">
+            {% if o.open_interest is not none %}{{ o.open_interest }}{% else %}—{% endif %}
+          </td>
+          <td class="px-3 py-1.5 whitespace-nowrap">
+            {% if o.advice %}
+            <span
+              class="px-1.5 py-0.5 rounded text-[10px] font-semibold ring-1 ring-inset
+                {% if o.advice.label == 'CLOSE' %}bg-emerald-100 text-emerald-800 ring-emerald-200
+                {% elif o.advice.label == 'STOP_LOSS' %}bg-orange-100 text-orange-800 ring-orange-200
+                {% elif o.advice.label == 'ROLL' and o.advice.severity == 'critical' %}bg-rose-100 text-rose-800 ring-rose-200
+                {% elif o.advice.label == 'ROLL' %}bg-amber-100 text-amber-800 ring-amber-200
+                {% else %}bg-slate-100 text-slate-600 ring-slate-200{% endif %}"
+              title="{{ o.advice.reason }}"
+            >{{ o.advice.label }}</span>
+            {{ info_tip(o.advice.reason) }}
+            {% else %}
+            <span class="text-slate-300">—</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% if o.advice and o.advice.label != 'HOLD' %}
+        <tr class="border-t-0
+          {% if o.advice.label == 'CLOSE' %}bg-emerald-50/70
+          {% elif o.advice.label == 'STOP_LOSS' %}bg-orange-50/70
+          {% elif o.advice.severity == 'critical' %}bg-rose-50/70
+          {% else %}bg-amber-50/60{% endif %}">
+          <td colspan="13" class="px-3 py-1.5 text-xs
+            {% if o.advice.label == 'CLOSE' %}text-emerald-800
+            {% elif o.advice.label == 'STOP_LOSS' %}text-orange-800
+            {% elif o.advice.severity == 'critical' %}text-rose-800
+            {% else %}text-amber-800{% endif %}">
+            {{ o.advice.reason }}
+          </td>
+        </tr>
+        {% endif %}
+        {% if o.assigned_scenario %}
+        <tr class="bg-slate-50/60">
+          <td colspan="13" class="px-3 py-2">
+            <details>
+              <summary class="cursor-pointer text-xs text-slate-700 select-none">
+                持有到期 ·
+                <span class="font-normal">{{ o.assigned_scenario.note }}</span>
+                {% if o.assigned_scenario.realized_total is not none %}
+                <span class="ml-2 font-semibold
+                  {% if o.assigned_scenario.realized_total > 0 %}text-emerald-700{% else %}text-rose-600{% endif %}">
+                  兑现 ${{ "{:+,.0f}".format(o.assigned_scenario.realized_total) }} ({{ o.assigned_scenario.contracts }} 份)
+                </span>
+                {% endif %}
+              </summary>
+              <div class="mt-2 text-xs text-slate-600 grid grid-cols-2 gap-x-8 gap-y-1 max-w-2xl">
+                <div class="text-slate-500">若 OOM 到期（保留 premium）</div>
+                <div class="text-right tabular-nums text-emerald-700 font-semibold">
+                  ${{ "%.2f"|format(o.assigned_scenario.oom_kept_per_share) }}/sh
+                  · 合计 ${{ "{:+,.0f}".format(o.assigned_scenario.oom_kept_total) }}
+                </div>
+                {% if o.right == 'C' %}
+                <div class="text-slate-500">若被行权：有效售价</div>
+                <div class="text-right tabular-nums">
+                  ${{ "%.2f"|format(o.assigned_scenario.effective_price_per_share) }}/sh
+                </div>
+                {% if o.assigned_scenario.realized_per_share is not none %}
+                <div class="text-slate-500">vs 股票成本 → 兑现 P&L/sh</div>
+                <div class="text-right tabular-nums font-semibold
+                  {% if o.assigned_scenario.realized_per_share > 0 %}text-emerald-700{% else %}text-rose-600{% endif %}">
+                  ${{ "%+.2f"|format(o.assigned_scenario.realized_per_share) }}/sh
+                </div>
+                {% endif %}
+                {% else %}
+                <div class="text-slate-500">若被接：有效接货价</div>
+                <div class="text-right tabular-nums">
+                  ${{ "%.2f"|format(o.assigned_scenario.effective_price_per_share) }}/sh
+                </div>
+                {% endif %}
+              </div>
+              {% if o.next_cycle_puts %}
+              <div class="mt-3 text-xs text-slate-600">
+                <div class="font-medium mb-1">
+                  假设被行权后，下一轮 CSP 候选
+                  <span class="text-slate-400 font-normal">(PUT, expiry &gt; 本 CC, strike &lt; ${{ "%.2f"|format(o.strike) }})</span>
+                </div>
+                <table class="w-full text-xs">
+                  <thead class="text-slate-500">
+                    <tr>
+                      <th class="text-left px-2 py-1 font-medium">Expiry</th>
+                      <th class="text-right px-2 py-1 font-medium">DTE</th>
+                      <th class="text-right px-2 py-1 font-medium">Strike</th>
+                      <th class="text-right px-2 py-1 font-medium">Mid</th>
+                      <th class="text-right px-2 py-1 font-medium">Δ</th>
+                      <th class="text-right px-2 py-1 font-medium" title="strike − mid：若被接的实际成本/sh">有效接货价</th>
+                      <th class="text-right px-2 py-1 font-medium" title="有效接货价 vs 原股票成本">vs 原成本</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% for p in o.next_cycle_puts %}
+                    <tr class="border-t border-slate-200/60">
+                      <td class="px-2 py-1 font-mono">{{ p.expiry.isoformat() }}</td>
+                      <td class="text-right px-2 py-1">{{ p.dte }}</td>
+                      <td class="text-right px-2 py-1 tabular-nums">${{ "%.2f"|format(p.strike) }}</td>
+                      <td class="text-right px-2 py-1 tabular-nums">${{ "%.2f"|format(p.mid) }}</td>
+                      <td class="text-right px-2 py-1 tabular-nums">
+                        {% if p.delta is not none %}{{ "%.2f"|format(p.delta) }}{% else %}—{% endif %}
+                      </td>
+                      <td class="text-right px-2 py-1 tabular-nums">${{ "%.2f"|format(p.effective_buy) }}</td>
+                      <td class="text-right px-2 py-1 tabular-nums font-medium
+                        {% if p.gap_vs_basis < 0 %}text-emerald-700{% else %}text-rose-600{% endif %}">
+                        {{ "%+.2f"|format(p.gap_vs_basis) }}
+                      </td>
+                    </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </div>
+              {% endif %}
+            </details>
+          </td>
+        </tr>
+        {% endif %}
+        {% if o.roll_candidates %}
+        <tr class="bg-amber-50/40">
+          <td colspan="13" class="px-3 py-2">
+            <details>
+              <summary class="cursor-pointer text-xs text-amber-800 select-none">
+                Roll 候选 · {{ o.roll_candidates|length }} 条
+                <span class="text-slate-500 font-normal">（BTC @ ask ${{ "%.2f"|format(o.roll_candidates[0].close_cost) }} → STO new @ bid）</span>
+                {% set top = o.roll_candidates[0] %}
+                {% set total = (top.net_credit * (o.qty|abs) * 100)|round(0, 'floor') %}
+                <span class="ml-2 font-semibold
+                  {% if top.net_credit > 0 %}text-emerald-700{% else %}text-rose-700{% endif %}">
+                  最佳净 credit {{ "%+.2f"|format(top.net_credit) }}/sh · 合计 ${{ "{:+,.0f}".format(total) }}（{{ o.qty|abs }} 份）
+                </span>
+              </summary>
+              <table class="mt-2 w-full text-xs">
+                <thead class="text-slate-500">
+                  <tr>
+                    <th class="text-left px-2 py-1 font-medium">New expiry</th>
+                    <th class="text-right px-2 py-1 font-medium">DTE</th>
+                    <th class="text-right px-2 py-1 font-medium">Strike</th>
+                    <th class="text-right px-2 py-1 font-medium" title="strike 相对原仓">Δstrike</th>
+                    <th class="text-right px-2 py-1 font-medium">New Δ</th>
+                    <th class="text-right px-2 py-1 font-medium">Open credit</th>
+                    <th class="text-right px-2 py-1 font-medium" title="净收入（开新仓 − 关旧仓）">Net credit</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for r in o.roll_candidates %}
+                  <tr class="border-t border-amber-200/60">
+                    <td class="px-2 py-1 font-mono">{{ r.new_expiry.isoformat() }}</td>
+                    <td class="text-right px-2 py-1">{{ r.new_dte }}</td>
+                    <td class="text-right px-2 py-1 tabular-nums">${{ "%.2f"|format(r.new_strike) }}</td>
+                    <td class="text-right px-2 py-1 tabular-nums text-slate-500">{{ "%+.2f"|format(r.strike_diff) }}</td>
+                    <td class="text-right px-2 py-1 tabular-nums">
+                      {% if r.new_delta is not none %}{{ "%.2f"|format(r.new_delta) }}{% else %}—{% endif %}
+                    </td>
+                    <td class="text-right px-2 py-1 tabular-nums">${{ "%.2f"|format(r.open_credit) }}</td>
+                    <td class="text-right px-2 py-1 tabular-nums font-semibold
+                      {% if r.net_credit > 0 %}text-emerald-700{% else %}text-rose-600{% endif %}">
+                      {{ "%+.2f"|format(r.net_credit) }}
+                    </td>
+                  </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </details>
+          </td>
+        </tr>
+        {% endif %}
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endif %}
+
+  <!-- Open orders (pending) -->
+  {% if orders %}
+  <section>
+    <h3 class="text-xs uppercase tracking-wide text-slate-500 mb-2">
+      Pending orders <span class="text-slate-400 normal-case">— 已挂单未成交</span>
+    </h3>
+    <table class="w-full text-sm border border-amber-200 rounded-md overflow-hidden">
+      <thead class="bg-amber-50 text-amber-800 text-xs">
+        <tr>
+          <th class="text-left px-3 py-1.5 font-medium">Account</th>
+          <th class="text-left px-3 py-1.5 font-medium">Type</th>
+          <th class="text-left px-3 py-1.5 font-medium">Action</th>
+          <th class="text-right px-3 py-1.5 font-medium">Strike</th>
+          <th class="text-left px-3 py-1.5 font-medium">Expiry</th>
+          <th class="text-right px-3 py-1.5 font-medium">DTE</th>
+          <th class="text-right px-3 py-1.5 font-medium">Qty</th>
+          <th class="text-left px-3 py-1.5 font-medium">Order</th>
+          <th class="text-right px-3 py-1.5 font-medium">Limit</th>
+          <th class="text-left px-3 py-1.5 font-medium">Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for o in orders %}
+        <tr class="border-t border-amber-100">
+          <td class="px-3 py-1.5 font-mono">{{ o.account }}</td>
+          <td class="px-3 py-1.5 text-xs">
+            {% if o.asset_type == 'OPTION' %}
+            <span class="px-1 rounded text-[10px] font-medium
+              {% if o.right == 'C' %}bg-emerald-100 text-emerald-700
+              {% else %}bg-sky-100 text-sky-700{% endif %}"
+              title="{% if o.right == 'C' %}Call — 看涨期权{% else %}Put — 看跌期权{% endif %}">{{ o.right }}</span>
+            {% else %}
+            <span class="px-1 rounded text-[10px] font-medium bg-slate-100 text-slate-600" title="Stock — 股票头寸">STK</span>
+            {% endif %}
+          </td>
+          <td class="px-3 py-1.5">
+            <span class="px-1 rounded text-[10px] font-medium
+              {% if o.action == 'BUY' %}bg-emerald-100 text-emerald-700
+              {% else %}bg-rose-100 text-rose-700{% endif %}">{{ o.action }}</span>
+          </td>
+          <td class="text-right px-3 py-1.5 tabular-nums">
+            {% if o.strike %}${{ "%.2f"|format(o.strike) }}{% else %}—{% endif %}
+          </td>
+          <td class="px-3 py-1.5 font-mono text-xs">
+            {% if o.expiry %}{{ o.expiry.isoformat() }}{% else %}—{% endif %}
+          </td>
+          <td class="text-right px-3 py-1.5">
+            {% if o.dte is not none %}{{ o.dte }}{% else %}—{% endif %}
+          </td>
+          <td class="text-right px-3 py-1.5 tabular-nums">{{ "%g"|format(o.qty) }}</td>
+          <td class="px-3 py-1.5 text-xs text-slate-600">{{ o.order_type }}</td>
+          <td class="text-right px-3 py-1.5 tabular-nums">
+            {% if o.lmt_price %}${{ "%.2f"|format(o.lmt_price) }}{% elif o.aux_price %}@${{ "%.2f"|format(o.aux_price) }}{% else %}—{% endif %}
+          </td>
+          <td class="px-3 py-1.5 text-xs text-slate-500">{{ o.status or '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endif %}
+
+  <!-- Advisor candidates -->
+  {% if candidates is not none %}
+  <section>
+    <h3 class="text-xs uppercase tracking-wide text-slate-500 mb-2">
+      Opening Advisor — top {{ candidates|length }}
+    </h3>
+    {% if candidates %}
+    <table class="w-full text-sm border border-slate-200 rounded-md overflow-hidden">
+      <thead class="bg-emerald-50 text-emerald-700 text-xs">
+        <tr>
+          <th class="text-right px-3 py-1.5 font-medium">#</th>
+          <th class="text-left px-3 py-1.5 font-medium">R</th>
+          <th class="text-right px-3 py-1.5 font-medium">Strike</th>
+          <th class="text-left px-3 py-1.5 font-medium">Expiry</th>
+          <th class="text-right px-3 py-1.5 font-medium">DTE</th>
+          <th class="text-right px-3 py-1.5 font-medium">Premium</th>
+          <th class="text-right px-3 py-1.5 font-medium">Δ</th>
+          <th class="text-right px-3 py-1.5 font-medium" title="未平仓合约数">OI</th>
+          <th class="text-right px-3 py-1.5 font-medium">ROC%/yr</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in candidates %}
+        <tr class="border-t border-slate-100 {% if loop.index == 1 %}bg-emerald-50/50{% endif %}">
+          <td class="text-right px-3 py-1.5 font-medium">{{ loop.index }}</td>
+          <td class="px-3 py-1.5">
+            <span class="px-1 rounded text-[10px] font-medium
+              {% if c.right == 'C' %}bg-emerald-100 text-emerald-700
+              {% else %}bg-sky-100 text-sky-700{% endif %}"
+              title="{% if c.right == 'C' %}Call — 看涨期权{% else %}Put — 看跌期权{% endif %}">
+              {{ c.right }}
+            </span>
+          </td>
+          <td class="text-right px-3 py-1.5 tabular-nums">${{ "%.2f"|format(c.strike) }}</td>
+          <td class="px-3 py-1.5 font-mono text-xs">
+            {{ c.expiry.isoformat() }}
+            {% if c.is_monthly %}
+            <span class="ml-1 px-1 rounded text-[9px] font-semibold bg-indigo-100 text-indigo-700" title="标准月度期权（第三个周五）">M</span>
+            {% else %}
+            <span class="ml-1 px-1 rounded text-[9px] font-medium bg-slate-100 text-slate-500" title="周/非月度期权">W</span>
+            {% endif %}
+          </td>
+          <td class="text-right px-3 py-1.5">{{ c.dte }}</td>
+          <td class="text-right px-3 py-1.5 tabular-nums font-medium">${{ "%.2f"|format(c.premium) }}</td>
+          <td class="text-right px-3 py-1.5 tabular-nums">
+            {% if c.delta is not none %}{{ "%.2f"|format(c.delta) }}{% else %}—{% endif %}
+          </td>
+          <td class="text-right px-3 py-1.5 tabular-nums text-slate-500">
+            {% if c.open_interest is not none %}{{ c.open_interest }}{% else %}—{% endif %}
+          </td>
+          <td class="text-right px-3 py-1.5 tabular-nums font-semibold
+              {% if c.annualized_roc >= 0.40 %}text-emerald-700
+              {% elif c.annualized_roc >= 0.20 %}text-emerald-600
+              {% else %}text-slate-600{% endif %}">
+            {{ "%.1f"|format(c.annualized_roc * 100) }}%
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p class="text-xs text-slate-400 mt-2">
+      Underlying ≈ ${{ "%.2f"|format(candidates[0].underlying_price) }} · run at request time
+    </p>
+    {% else %}
+    <p class="text-sm text-slate-500">No qualifying candidates. Try widening the intent preset.</p>
+    {% endif %}
+  </section>
+  {% endif %}
+</div>

@@ -1,0 +1,141 @@
+<div
+  class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50"
+  x-data="{
+    intent: '{{ sym.intent if sym else 'WANT_TO_OWN' }}',
+  }"
+  @click.self="document.getElementById('modal-root').innerHTML=''"
+  @keydown.escape.window="document.getElementById('modal-root').innerHTML=''"
+>
+  <div class="bg-white rounded-lg shadow-xl w-full max-w-md mx-4 overflow-hidden">
+    <div class="px-5 py-3 border-b border-slate-200 flex items-center justify-between">
+      <h3 class="text-sm font-semibold tracking-tight">
+        {% if mode == 'create' %}添加 Symbol{% else %}编辑 {{ sym.symbol }}{% endif %}
+      </h3>
+      <button
+        type="button"
+        class="text-slate-400 hover:text-slate-700 text-xl leading-none"
+        @click="document.getElementById('modal-root').innerHTML=''"
+      >×</button>
+    </div>
+
+    <form
+      class="px-5 py-4 space-y-4"
+      {% if mode == 'create' %}
+      hx-post="/symbols"
+      {% else %}
+      hx-patch="/symbols/{{ sym.symbol }}"
+      {% endif %}
+      hx-target="#modal-root"
+      hx-swap="innerHTML"
+      hx-indicator="#form-spinner"
+    >
+      {% if error %}
+      <div class="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded px-3 py-2">
+        {{ error }}
+      </div>
+      {% endif %}
+
+      <!-- Symbol -->
+      <div>
+        <label class="block text-xs font-medium text-slate-600 mb-1">Symbol</label>
+        <input
+          name="symbol"
+          type="text"
+          required
+          {% if mode == 'edit' %}readonly{% endif %}
+          value="{{ sym.symbol if sym else '' }}"
+          class="w-full px-3 py-1.5 text-sm font-mono border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-emerald-500 {% if mode == 'edit' %}bg-slate-50 text-slate-500{% endif %}"
+          oninput="this.value = this.value.toUpperCase()"
+          placeholder="例如 NVDA"
+        />
+      </div>
+
+      <!-- Intent -->
+      <div>
+        <label class="block text-xs font-medium text-slate-600 mb-1">Intent</label>
+        <select
+          name="intent"
+          x-model="intent"
+          class="w-full px-3 py-1.5 text-sm border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white"
+        >
+          {% for v in intents %}
+          <option value="{{ v }}" {% if sym and sym.intent == v %}selected{% endif %}>{{ v }}</option>
+          {% endfor %}
+        </select>
+        <p class="text-[11px] text-slate-400 mt-1">
+          INCOME / TRADE 需持仓 · WANT_TO_OWN 需 target_buy_price · WATCH / CORE_HOLD 不进 scanner
+        </p>
+      </div>
+
+      <!-- Target buy price (only meaningful for WANT_TO_OWN) -->
+      <div x-show="intent === 'WANT_TO_OWN'" x-transition>
+        <label class="block text-xs font-medium text-slate-600 mb-1">
+          Target buy price <span class="text-rose-500">*</span>
+        </label>
+        <input
+          name="target_buy_price"
+          type="number"
+          step="0.01"
+          min="0"
+          value="{{ '%.2f'|format(sym.target_buy_price) if sym and sym.target_buy_price else '' }}"
+          class="w-full px-3 py-1.5 text-sm border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-emerald-500 tabular-nums"
+          placeholder="例如 150.00"
+        />
+      </div>
+
+      <!-- Wheel -->
+      <div>
+        <label class="inline-flex items-center gap-2 text-xs text-slate-700 cursor-pointer select-none">
+          <input
+            name="wheel_enabled"
+            type="checkbox"
+            value="true"
+            {% if sym and sym.wheel_enabled %}checked{% endif %}
+            class="rounded border-slate-300"
+          />
+          <span>Wheel ↻ 自动翻转 intent（CSP 接 → INCOME；CC 行权 → WANT_TO_OWN）</span>
+        </label>
+      </div>
+
+      <!-- Weekly OK -->
+      <div>
+        <label class="inline-flex items-center gap-2 text-xs text-slate-700 cursor-pointer select-none">
+          <input
+            name="weekly_ok"
+            type="checkbox"
+            value="true"
+            {% if sym and sym.weekly_ok %}checked{% endif %}
+            class="rounded border-slate-300"
+          />
+          <span>允许周期权（仅流动性好的标的勾选；默认只看月度第三周五）</span>
+        </label>
+      </div>
+
+      <!-- Notes -->
+      <div>
+        <label class="block text-xs font-medium text-slate-600 mb-1">备注</label>
+        <textarea
+          name="notes"
+          rows="2"
+          class="w-full px-3 py-1.5 text-sm border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-emerald-500"
+          placeholder="自由备注"
+        >{{ sym.notes or '' if sym else '' }}</textarea>
+      </div>
+
+      <div class="flex justify-end gap-2 pt-2">
+        <button
+          type="button"
+          class="text-sm px-3 py-1.5 rounded-md text-slate-600 hover:bg-slate-100"
+          @click="document.getElementById('modal-root').innerHTML=''"
+        >取消</button>
+        <button
+          type="submit"
+          class="text-sm px-3 py-1.5 rounded-md bg-emerald-600 text-white hover:bg-emerald-500"
+        >
+          {% if mode == 'create' %}添加{% else %}保存{% endif %}
+          <span id="form-spinner" class="htmx-indicator">…</span>
+        </button>
+      </div>
+    </form>
+  </div>
+</div>

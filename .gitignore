@@ -1,0 +1,31 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Local secrets and personal config
+.env
+config/accounts.yaml
+
+# SQLite database (regenerable from IBKR sync)
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+
+# Editor / OS junk
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Test caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
