@@ -1,178 +1,198 @@
 # options-tool
 
-本地化的 Interactive Brokers 期权辅助决策工具。在你为每只股票声明的 **intent**
-（持有意图）框架下，对 covered call (CC) 和 cash-secured put (CSP) 候选合约做
-量化排序。
+本地化的 Interactive Brokers 期权辅助决策工具。
+你给每只股票打一个**意图标签**，工具按这个意图在期权链里选合约、排序、
+在你已开仓后给提醒。
 
-工具 **不自动下单**。它以只读方式连接 IB Gateway，把 positions / transactions
-持久化到本地 SQLite，并提供一个简洁的 Web 面板和 Telegram 机会推送。
+> ⚠️ **不会自动下单。** 所有建议都是文字，最终要不要点 "Open" 是你的事。
+> 工具以**只读 API** 连接 IB Gateway——哪怕代码有 bug 也下不了单。
 
-## 为什么自己写
+---
 
-IBKR 自带前端按 raw premium / 买卖价排序期权链，但它不知道：
+## 谁适合用
 
-- 哪些是你 **打死不卖** 的核心持仓
-- 哪些是你想做 **短线套利**、可以接受激进 Delta 的票
-- 哪些是观察名单里你愿意在 **目标价以下** 用 CSP 接盘的票
-- 当前合约到期日是不是 **跨财报**
+| 你是这种人 | 工具能帮你 |
+|---|---|
+| 长期持有底仓，想卖 covered call 收 premium 当租金 | 给 `INCOME` 意图，按年化 ROC 排序保守的远 OTM call |
+| 短线波段卖 CC | 给 `TRADE` 意图，按绝对 premium 排序近月、Δ 略高的 call |
+| 观察名单里有想低价接的票 | 给 `WANT_TO_OWN` 意图 + 目标价，按年化 ROC 排序 strike ≤ 目标价的 cash-secured put |
+| 不想每次手动算财报冲突 / 年化 ROC | 工具硬规则排除跨财报合约，自动算年化 |
 
-这个工具把上述意图编码成 per-symbol 的 intent 标签，在你给定的边界内
-排序合约。决策权仍在你手里 —— 工具只回答："给定我对这只票的 intent，
-今天最划算的合约是哪几张？"
+不适合：高频策略、PMCC、复杂 spread、量化回测。
 
-## 架构总览
+---
+
+## 快速开始（三步）
+
+### 第一步：装并设置 IB Gateway
+
+按 [docs/ib-gateway-setup.md](docs/ib-gateway-setup.md) 一步步装、登录、
+开 API、加 Trusted IP `127.0.0.1`。**这是最容易卡住的一步，建议照着做。**
+
+### 第二步：装本工具
+
+打开终端，cd 到项目目录，跑：
+
+```bash
+bash scripts/install.sh
+```
+
+它会：装 Python 包管理器 `uv`（如没装）、装项目依赖、复制配置文件模板、
+建本地 SQLite 数据库。
+
+跑完会提示你下一步——编辑 `config/accounts.yaml`，把里面的 `UXXXXXXX`
+改成你真实的 IBKR 账号代码（U 开头的那串，在 IB Gateway 主界面右上角能
+看到）。
+
+### 第三步：启动
+
+确认 IB Gateway 已经登录，然后：
+
+```bash
+bash scripts/run.sh
+```
+
+浏览器打开 <http://localhost:8000>。第一次启动是空的，点右上角
+**Sync IBKR** 按钮把当前持仓拉下来。
+
+---
+
+## 日常用法
+
+### 加一只想跟踪的股票
+
+左上角 **+ Add** → 填 ticker（比如 `NVDA`） → 选意图 → 保存。
+
+| 意图 | 适用 |
+|---|---|
+| `INCOME` | 已经持有这只票的底仓 |
+| `TRADE` | 持有底仓，想做短线 CC |
+| `WANT_TO_OWN` | 没买，想低价接 |
+| `WATCH` | 只跟踪股价 + 财报 |
+| `CORE_HOLD` | 长期裸持，绝不卖期权 |
+
+`WANT_TO_OWN` 必须填**目标价**，否则工具不会给建议。
+
+### 看建议
+
+左侧点击 symbol → 右侧详情页：
+
+- **顶部**：股价、IV Rank、距下次财报天数
+- **持仓**（如果有）：每张 short option 的当前 P&L、Δ、距到期、工具的
+  CLOSE / HOLD / ROLL / STOP_LOSS 建议（颜色编码）
+- **Top opportunities**：当前意图下排名前 5 的候选合约
+
+看到喜欢的合约 → 自己去 TWS 点 "Open"。工具不会替你下单。
+
+### Telegram 推送（可选）
+
+编辑 `.env`，填：
+
+```
+OPTIONS_TOOL_TELEGRAM_BOT_TOKEN=...
+OPTIONS_TOOL_TELEGRAM_CHAT_ID=...
+OPTIONS_TOOL_FINNHUB_API_KEY=...
+```
+
+不填也能用，工具会 graceful 降级，不影响 Web 面板。
+
+详细推送规则见 [规则手册](docs/规则手册.md#5-telegram-提醒规则)。
+
+---
+
+## 想改阈值
+
+**Web 面板里能改的**（即时生效）：
+- 某只 symbol 的意图 / 目标价 / Wheel / 备注
+
+**改 yaml 文件**（要重启）：
+- `config/alerts.yaml` — Δ 警戒值、止损倍数、安静时段、去重窗口、ROC 阈值
+- `config/intents.yaml` — 各意图的 Δ / DTE / 排序口径
+
+完整规则和默认值见 [docs/规则手册.md](docs/规则手册.md)。
+
+---
+
+## 故障排查
+
+| 现象 | 原因 / 解决 |
+|---|---|
+| `Connection refused` 报错 | IB Gateway 没开或没登录。先去开 |
+| Web 面板能开但 Sync IBKR 卡住 | API 没勾 "Enable ActiveX and Socket Clients"，回 [setup](docs/ib-gateway-setup.md#3-配置-api关键步骤) |
+| `clientId X is already in use` | 别的程序占了同一个 client_id。改 `config/accounts.yaml` 里 `client_id: 7878` 换一个值，比如 `7980` |
+| 添加 symbol 报"IBKR 找不到 XXX" | ticker 拼错了，或者 IBKR 没这个标的的市场数据订阅 |
+| 期权链一直空 | 等 5 分钟（chain 缓存的预取周期），或者点 symbol 详情页的 **Run advisor** 按钮强制拉一次 |
+| Telegram 推送没收到 | 检查 `.env` 里 `TELEGRAM_BOT_TOKEN` 和 `TELEGRAM_CHAT_ID`；可以跑 `uv run options-tool test-telegram "ping"` 测试 |
+
+---
+
+## 进阶
+
+### CLI 命令
+
+Web 面板覆盖大部分日常操作，但 CLI 在脚本化和 debug 时方便：
+
+```bash
+uv run options-tool init-db                 # 建表
+uv run options-tool sync-positions          # 拉持仓 + 财报
+uv run options-tool sync-iv-history         # 1 年 IV 回填（首次必跑）
+uv run options-tool sync-transactions       # 拉当天 fills
+uv run options-tool scan-alerts             # 手动跑一次告警扫描
+uv run options-tool test-telegram "ping"    # 验 Telegram
+uv run options-tool simulate-roll URA --right P --strike 30 --expiry 2026-05-16
+uv run options-tool analyze-recommendations --skipped-only
+uv run options-tool symbols list
+uv run options-tool symbols set NVDA --intent INCOME --wheel
+```
+
+### 多账户
+
+`config/accounts.yaml` 支持多 entry，每个账户用独立 IB Gateway 实例（端口
+不同）。复制示例里第二段的注释取消掉，填进去就行。
+
+### 架构
 
 ```mermaid
 flowchart TB
     subgraph P[Presentation]
-        WEB[web/<br/>FastAPI + HTMX]
-        ALERTS[alerts.py<br/>Telegram]
-        CLI[cli.py<br/>typer]
+        WEB[FastAPI + HTMX]
+        ALERTS[Telegram]
+        CLI[typer CLI]
     end
-    subgraph L[Logic — domain/]
+    subgraph L[Logic — 纯函数无 I/O]
         INTENT[intents.py]
         ROC[roc.py]
-        CB[cost_basis.py]
-        IVS[iv_stats.py]
         AO[advisor_open.py]
+        AP[advisor_position.py]
         AD[alert_detection.py]
+        WHEEL[wheel.py]
     end
     subgraph D[Data]
-        IB[ibkr.py<br/>ib_async]
-        DB[(SQLite<br/>db.py)]
-        JOBS[jobs.py<br/>APScheduler]
+        IB[ib_async]
+        DB[(SQLite)]
+        JOBS[APScheduler]
     end
     P --> L
     L --> D
-    JOBS -.周期触发.-> IB
-    JOBS -.周期触发.-> ALERTS
+    JOBS -.触发.-> IB
+    JOBS -.触发.-> ALERTS
 
-    classDef p fill:#ecfdf5,stroke:#10b981,color:#065f46
-    classDef l fill:#eff6ff,stroke:#3b82f6,color:#1e3a8a
-    classDef d fill:#fef3c7,stroke:#f59e0b,color:#78350f
+    classDef p fill:#ecfdf5,stroke:#10b981
+    classDef l fill:#eff6ff,stroke:#3b82f6
+    classDef d fill:#fef3c7,stroke:#f59e0b
     class WEB,ALERTS,CLI p
-    class INTENT,ROC,CB,IVS,AO,AD l
+    class INTENT,ROC,AO,AP,AD,WHEEL l
     class IB,DB,JOBS d
 ```
 
-## 状态
+依赖方向：Presentation → Logic → Data。Logic 层是纯函数（不 import IBKR /
+DB），单测覆盖率主战场（170 个单测）。
 
-P0 + P1 完成。具体已交付：IBKR 多账户同步、Opening Advisor、adjusted cost
-basis、Finnhub 财报日历、IV 历史 + IV rank/percentile、Telegram 机会推送、
-APScheduler 自动化（chain prefetch / alerts / daily IV / daily fills）。
+更多设计细节见 [CLAUDE.md](CLAUDE.md)（架构 / 模块图 / 决策记录）和
+[docs/SCHEMA.md](docs/SCHEMA.md)（数据库 schema）。
 
-下一档 P2：Position Advisor（Close/Hold/Roll）、wheel intent 自动翻转、
-Flex Web Service 历史 fills 导入。
-
-详见 [docs/SCHEMA.md](docs/SCHEMA.md)（数据模型）和 [CLAUDE.md](CLAUDE.md)
-（架构 / 模块图 / 设计决策）。
-
-## 安装
-
-前置：Python 3.12+（用 `uv` 管理），IB Gateway 跑在 `127.0.0.1:4001`，
-本机装好 `uv`。
-
-```bash
-uv sync                                     # 装依赖到 .venv
-cp config/accounts.yaml.example config/accounts.yaml
-$EDITOR config/accounts.yaml                # 填 account code
-uv run options-tool init-db                 # 建 SQLite 表
-uv run options-tool sync-positions          # 从 IBKR 拉当前持仓 + 财报
-uv run options-tool sync-iv-history         # 1 年 IV/HV 回填（首次必跑）
-uv run options-tool serve                   # 启 Web 面板（localhost:8000）
-```
-
-日常用 Web 面板就够。其余 CLI 命令（debug / 一次性任务）：
-
-```bash
-uv run options-tool sync-transactions       # 拉当天 fills（scheduler 已每天跑）
-uv run options-tool scan-alerts             # 手动跑一次告警扫描
-uv run options-tool test-telegram "ping"    # 验 token / chat_id
-```
-
-Telegram 配置（可选）：在项目根放 `.env`：
-
-```
-TELEGRAM_BOT_TOKEN=...
-TELEGRAM_CHAT_ID=...
-FINNHUB_API_KEY=...
-```
-
-## Intent 标签
-
-每只 tracked symbol 带一个 intent 标签，决定 scanner 行为：
-
-| 标签           | 含义                                  | Scanner 行为                                       |
-| ------------- | ------------------------------------- | ------------------------------------------------ |
-| `CORE_HOLD`   | 长期持有，绝不卖期权                    | 完全不出现在扫描结果里                             |
-| `INCOME`      | 持有收租（covered call）               | 保守：Delta ≤ 0.20，DTE 30–45，深度 OTM           |
-| `TRADE`       | 短线套利 covered call                   | 激进：Delta 0.25–0.35，DTE 7–21                  |
-| `WANT_TO_OWN` | 观察票，愿在目标价接盘（CSP）           | strike ≤ target，按年化 ROC 排序                  |
-| `WATCH`       | 只盯价格 + 财报                        | 不出建议；仅 price + earnings 跟踪                 |
-
-可选 `wheel` 修饰符：标记这只票走 wheel 策略。**flag 已存 DB，但 assignment
-触发的自动翻转逻辑还没实现**（P2 待办）—— 现在被 assign 后需手工改 intent。
-
-**财报红线。** 所有 scanner 都会排除 DTE 跨财报日的合约。这是硬规则，
-没有 opt-out。
-
-## 触发模型：A + B 混合
-
-```mermaid
-flowchart LR
-    USER([用户]) -- 点击 symbol --> WEB
-    SCHED[APScheduler] -- 5 min --> CACHE[(chain_cache)]
-    WEB -- 命中缓存 --> CACHE
-    SCHED -- 周期扫描 --> SCAN{阈值<br/>触发?}
-    SCAN -- 是 --> TG[Telegram 推送]
-    SCAN -- 否 --> NOOP[忽略]
-
-    classDef user fill:#fef3c7,stroke:#f59e0b
-    classDef sys fill:#eff6ff,stroke:#3b82f6
-    classDef store fill:#f1f5f9,stroke:#64748b
-    class USER user
-    class WEB,SCHED,SCAN,TG sys
-    class CACHE,NOOP store
-```
-
-- **A（按需）**：用户点开一个 symbol，advisor 读取缓存的 chain，渲染
-  Top N。Cache 由 scheduler 每 5 分钟刷新一次，所以点击体感秒开。
-- **B（机会推送）**：scheduler 周期扫描所有 tagged symbols，越过阈值
-  （IV spike / 已开仓 Delta 危险 / 财报冲突 / ROC 高）就 Telegram 推送。
-
-22:00–07:00 静音；dedup key 防止重复推送。
-
-## 目录结构
-
-```
-src/options_tool/
-  ibkr.py            IB Gateway 适配（ib_async）
-  db.py              SQLAlchemy 模型 + session
-  sync.py            positions / orders / earnings / IV / fills 同步
-  alerts.py          Telegram 分发 + 静音/dedup
-  advisor.py         Opening Advisor 编排（chain 拉取 + 缓存）
-  jobs.py            APScheduler：chain prefetch / 告警扫描 / daily IV / daily fills
-  finnhub.py         财报日历客户端
-  settings.py        pydantic-settings 入口
-  domain/            纯逻辑层 —— 不依赖 IBKR 或 DB，可单测
-    intents.py       intent → 过滤预设
-    roc.py           年化 ROC 公式
-    cost_basis.py    premium-adjusted 成本基准
-    iv_stats.py      IV rank / percentile
-    advisor_open.py  filter + rank chain
-    alert_detection.py  profit-take / Δ 危险 / 财报冲突 / 机会
-  web/               FastAPI + HTMX 模板
-  cli.py             typer 入口
-config/
-  intents.yaml         per-intent 过滤预设
-  accounts.yaml        IB Gateway 连接配置（多账户）
-  alerts.yaml          告警阈值 + 静音时段
-data/
-  options.db       SQLite（gitignored）
-docs/
-  SCHEMA.md        数据库 schema 参考
-```
+---
 
 ## License
 
-个人使用。
+个人使用。不附带任何投资建议——所有期权交易决定由你自负。
