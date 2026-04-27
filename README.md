@@ -22,7 +22,37 @@
 
 ---
 
-## 快速开始（三步）
+## 快速开始（四步）
+
+> **平台说明**：以下步骤适用于 **macOS** 和 **Linux**。
+> Windows 用户请先装 [WSL2](https://learn.microsoft.com/zh-cn/windows/wsl/install)
+> （命令行 `wsl --install` 一条搞定），然后在 WSL 里按下面的步骤做。
+
+### 第零步：把代码下载到电脑上
+
+**如果你完全没用过 GitHub** —— 推荐"下载 ZIP"这条路：
+
+1. 浏览器打开 <https://github.com/szkangjian/Option>
+2. 找到绿色的 **`< > Code`** 按钮，点开 → 选 **Download ZIP**
+3. 下载完双击解压，假设解压到了 `~/Downloads/Option-main`
+4. 打开 **终端**（macOS：聚焦搜索 "Terminal" 回车；Linux：`Ctrl+Alt+T`），
+   进入这个目录：
+   ```bash
+   cd ~/Downloads/Option-main
+   ```
+
+> ⚠️ 这条路的代价：以后想升级要重新下 ZIP、把旧的 `config/`、`.env`、
+> `data/` 拷过去。如果你打算长期用，建议下面那条路。
+
+**如果以后想方便升级** —— 用 git clone：
+
+1. 装 git（macOS 自带；Linux 跑 `sudo apt install git`）
+2. 终端里跑：
+   ```bash
+   git clone https://github.com/szkangjian/Option.git
+   cd Option
+   ```
+3. 以后想升级，进入这个目录跑 `git pull` 就能拿到新版本
 
 ### 第一步：装并设置 IB Gateway
 
@@ -31,18 +61,19 @@
 
 ### 第二步：装本工具
 
-打开终端，cd 到项目目录，跑：
+确认你的终端**还在项目目录里**（提示符前应该能看到 `Option-main` 或
+`Option`），跑：
 
 ```bash
 bash scripts/install.sh
 ```
 
 它会：装 Python 包管理器 `uv`（如没装）、装项目依赖、复制配置文件模板、
-建本地 SQLite 数据库。
+建本地 SQLite 数据库。第一次跑大约 1–2 分钟。
 
-跑完会提示你下一步——编辑 `config/accounts.yaml`，把里面的 `UXXXXXXX`
-改成你真实的 IBKR 账号代码（U 开头的那串，在 IB Gateway 主界面右上角能
-看到）。
+跑完它会提示你下一步——用任意文本编辑器（macOS 自带的 TextEdit 也行，
+推荐 VS Code）打开 `config/accounts.yaml`，把里面的 `UXXXXXXX` 改成
+你真实的 IBKR 账号代码（U 开头那串，在 IB Gateway 主窗口右上角能看到）。
 
 ### 第三步：启动
 
@@ -54,6 +85,8 @@ bash scripts/run.sh
 
 浏览器打开 <http://localhost:8000>。第一次启动是空的，点右上角
 **Sync IBKR** 按钮把当前持仓拉下来。
+
+> 想关掉工具：回到运行 `run.sh` 那个终端窗口，按 `Ctrl + C`。
 
 ---
 
@@ -117,12 +150,18 @@ OPTIONS_TOOL_FINNHUB_API_KEY=...
 
 | 现象 | 原因 / 解决 |
 |---|---|
+| `bash: scripts/install.sh: No such file or directory` | 你不在项目目录里。先 `cd` 到解压后的 `Option-main` 或 `Option` 目录再跑 |
+| `command not found: uv`（新开终端后） | uv 装在 `~/.local/bin`，新终端要么重启，要么跑 `export PATH="$HOME/.local/bin:$PATH"`。`run.sh` 已自动处理 |
+| `command not found: bash` | 极罕见。macOS / Linux / WSL 都自带 bash |
+| `Permission denied` 跑脚本时 | ZIP 解压可能丢失可执行位。用 `bash scripts/xxx.sh` 显式调 bash 即可 |
 | `Connection refused` 报错 | IB Gateway 没开或没登录。先去开 |
 | Web 面板能开但 Sync IBKR 卡住 | API 没勾 "Enable ActiveX and Socket Clients"，回 [setup](docs/ib-gateway-setup.md#3-配置-api关键步骤) |
 | `clientId X is already in use` | 别的程序占了同一个 client_id。改 `config/accounts.yaml` 里 `client_id: 7878` 换一个值，比如 `7980` |
 | 添加 symbol 报"IBKR 找不到 XXX" | ticker 拼错了，或者 IBKR 没这个标的的市场数据订阅 |
 | 期权链一直空 | 等 5 分钟（chain 缓存的预取周期），或者点 symbol 详情页的 **Run advisor** 按钮强制拉一次 |
 | Telegram 推送没收到 | 检查 `.env` 里 `TELEGRAM_BOT_TOKEN` 和 `TELEGRAM_CHAT_ID`；可以跑 `uv run options-tool test-telegram "ping"` 测试 |
+| 想升级到最新版本（git clone 那条路） | 终端进入项目目录 → `git pull` → 再跑一次 `bash scripts/install.sh` 装新依赖 |
+| 想升级到最新版本（ZIP 那条路） | 重新下 ZIP 解压 → 把旧目录的 `.env`、`config/accounts.yaml`、`data/` 拷到新目录 → 跑 `bash scripts/install.sh` |
 
 ---
 

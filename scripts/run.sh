@@ -5,6 +5,16 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# install.sh 装的 uv 在 ~/.local/bin。新开终端如果没 source shell 配置，
+# 这里直接加进 PATH 兜底。
+export PATH="$HOME/.local/bin:$PATH"
+
+if ! command -v uv >/dev/null 2>&1; then
+  echo "✗ 找不到 uv（Python 包管理器）"
+  echo "  请先跑：bash scripts/install.sh"
+  exit 1
+fi
+
 if [[ ! -f config/accounts.yaml ]]; then
   echo "✗ 找不到 config/accounts.yaml"
   echo "  请先跑：bash scripts/install.sh"
