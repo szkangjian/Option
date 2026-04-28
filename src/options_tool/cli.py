@@ -205,7 +205,7 @@ def simulate_roll_cmd(
                 console.print("[red]✗[/red] no connected IBKR clients")
                 raise typer.Exit(2)
             client = multi.clients[0]
-            quotes = await client.fetch_option_chain(
+            result = await client.fetch_option_chain(
                 symbol.upper(),
                 side="CALL" if side == "C" else "PUT",
                 dte_min=dte_min,
@@ -214,9 +214,11 @@ def simulate_roll_cmd(
                 strike_window_pct=strike_window_pct,
                 max_strikes_per_side=25,
             )
+            quotes = result.quotes
 
         if not quotes:
-            console.print("[yellow]no quotes returned — market closed or bad symbol[/yellow]")
+            msg = result.reason or "market closed or bad symbol"
+            console.print(f"[yellow]no quotes returned — {msg}[/yellow]")
             return
 
         current = next(
@@ -481,9 +483,11 @@ def symbols_list_cmd(
         from rich.table import Table
 
         table = Table(show_edge=False, pad_edge=False)
-        for col in ("symbol", "intent", "target", "wheel", "weekly", "hidden", "notes"):
+        for col in ("symbol", "intent", "target", "wheel", "weekly", "hidden", "overrides", "notes"):
             table.add_column(col, overflow="fold")
         for s in rows:
+            ov = s.preset_overrides or {}
+            ov_str = ", ".join(f"{k}={v}" for k, v in ov.items()) if ov else ""
             table.add_row(
                 s.symbol,
                 s.intent,
@@ -491,6 +495,7 @@ def symbols_list_cmd(
                 "✓" if s.wheel_enabled else "",
                 "✓" if s.weekly_ok else "",
                 "✓" if s.hidden else "",
+                ov_str,
                 s.notes or "",
             )
         console.print(table)
@@ -506,15 +511,48 @@ def symbols_set_cmd(
     weekly: bool = typer.Option(None, "--weekly/--no-weekly", help="是否允许非 3rd-Friday 到期"),
     hidden: bool = typer.Option(None, "--hide/--unhide"),
     notes: str = typer.Option(None, "--notes"),
+    overrides: list[str] = typer.Option(
+        None,
+        "--override",
+        "-o",
+        help=(
+            "覆盖 intent preset 单个字段：--override delta_max=0.25 "
+            "（可重复）。可用字段："
+            "delta_min/delta_max/dte_min/dte_max/strike_window_pct/"
+            "max_strikes_per_side/strike_max_vs_target/top_n"
+        ),
+    ),
+    clear_overrides: bool = typer.Option(False, "--clear-overrides", help="清空所有 preset overrides"),
 ) -> None:
     """修改已跟踪 symbol 的字段；不存在则退出。创建新 symbol 走 Web 的 + Add。"""
     from options_tool.db import INTENT_VALUES, Symbol, session_scope
+    from options_tool.settings import (
+        PresetOverrideError,
+        validate_preset_overrides,
+    )
 
     configure_logging()
     sym_key = symbol.upper()
     if intent is not None and intent.upper() not in INTENT_VALUES:
         console.print(f"[red]invalid intent[/red] — must be one of {INTENT_VALUES}")
         raise typer.Exit(1)
+
+    # Parse --override key=value pairs early so we fail before mutating DB.
+    parsed_overrides: dict | None = None
+    if overrides:
+        candidate: dict = {}
+        for pair in overrides:
+            if "=" not in pair:
+                console.print(f"[red]✗[/red] override 必须是 key=value 格式（收到 {pair!r}）")
+                raise typer.Exit(1)
+            k, v = pair.split("=", 1)
+            candidate[k.strip()] = v.strip()
+        try:
+            parsed_overrides = validate_preset_overrides(candidate)
+        except PresetOverrideError as e:
+            console.print(f"[red]✗[/red] {e}")
+            raise typer.Exit(1)
+
     with session_scope() as session:
         row = session.get(Symbol, sym_key)
         if row is None:
@@ -534,6 +572,15 @@ def symbols_set_cmd(
             row.hidden = hidden
         if notes is not None:
             row.notes = notes or None
+        if clear_overrides:
+            row.preset_overrides = None
+        elif parsed_overrides is not None:
+            # Merge into existing overrides (additive semantics): user passing
+            # `--override delta_max=0.30` shouldn't wipe a previously-set
+            # `dte_max` override. Pass `--clear-overrides` for a wipe.
+            merged = dict(row.preset_overrides or {})
+            merged.update(parsed_overrides)
+            row.preset_overrides = merged or None
         # Warn (don't block) if post-edit state is WANT_TO_OWN without target.
         # The Web form enforces this at write, but CLI callers may edit
         # unrelated fields (notes, weekly) on a symbol that was already in
@@ -542,7 +589,10 @@ def symbols_set_cmd(
         missing_target_warn = (
             row.intent == "WANT_TO_OWN" and row.target_buy_price is None
         )
+        final_overrides = dict(row.preset_overrides or {})
     console.print(f"[green]✓[/green] {sym_key} updated")
+    if final_overrides:
+        console.print(f"  overrides: {final_overrides}")
     if missing_target_warn:
         console.print(
             "[yellow]⚠[/yellow] WANT_TO_OWN 仍缺 target_buy_price → scanner 会静默跳过。"

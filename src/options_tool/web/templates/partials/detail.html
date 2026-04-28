@@ -420,6 +420,24 @@
     <h3 class="text-xs uppercase tracking-wide text-slate-500 mb-2">
       Opening Advisor — top {{ candidates|length }}
     </h3>
+    {% if advise_source and advise_source != 'ibkr' %}
+    <div class="rounded-md border border-rose-300 bg-rose-50 px-4 py-2.5 text-sm text-rose-900 mb-2 flex items-start gap-2">
+      <span class="text-base leading-none">⚠</span>
+      <div>
+        <span class="font-semibold">数据源已退化：{{ advise_source|upper }}</span>
+        <span class="text-rose-800">
+          — IB Gateway 不可用，已 fallback 到 Yahoo Finance（~15min 延迟，Δ 由 IV → Black-Scholes 估算）。
+          下单前请用 TWS 复核报价。
+        </span>
+      </div>
+    </div>
+    {% endif %}
+    {% if not candidates and advise_reason %}
+    <div class="rounded-md border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-900 mb-2">
+      <span class="font-medium">没有候选 ·</span>
+      <span class="text-amber-800">{{ advise_reason }}</span>
+    </div>
+    {% endif %}
     {% if candidates %}
     <table class="w-full text-sm border border-slate-200 rounded-md overflow-hidden">
       <thead class="bg-emerald-50 text-emerald-700 text-xs">

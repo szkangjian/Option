@@ -1,8 +1,13 @@
 <div
   class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50"
-  x-data="{
-    intent: '{{ sym.intent if sym else 'WANT_TO_OWN' }}',
-  }"
+  x-data='{
+    intent: {{ (sym.intent if sym else "WANT_TO_OWN") | tojson }},
+    intentDefaults: {{ intent_defaults | tojson }},
+    placeholder(field) {
+      const d = this.intentDefaults[this.intent];
+      return d && d[field] !== "" ? "默认 " + d[field] : "（intent 不使用此项）";
+    },
+  }'
   @click.self="document.getElementById('modal-root').innerHTML=''"
   @keydown.escape.window="document.getElementById('modal-root').innerHTML=''"
 >
@@ -121,6 +126,40 @@
           placeholder="自由备注"
         >{{ sym.notes or '' if sym else '' }}</textarea>
       </div>
+
+      <!-- Per-symbol preset overrides -->
+      {% set overrides = (sym.preset_overrides if sym and sym.preset_overrides else {}) %}
+      <details class="border border-slate-200 rounded-md" {% if overrides %}open{% endif %}>
+        <summary class="cursor-pointer px-3 py-2 text-xs font-medium text-slate-700 select-none flex items-center justify-between">
+          <span>Preset overrides
+            <span class="text-slate-400 font-normal">— 留空 = 用 intent 默认值</span>
+          </span>
+          {% if overrides %}
+          <span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-800">
+            {{ overrides|length }} 项已覆盖
+          </span>
+          {% endif %}
+        </summary>
+        <div class="px-3 pb-3 pt-1 grid grid-cols-2 gap-x-3 gap-y-2">
+          {% for field in overridable_fields %}
+          <div>
+            <label class="block text-[11px] text-slate-500 mb-0.5 font-mono">{{ field }}</label>
+            <input
+              name="override_{{ field }}"
+              type="number"
+              step="any"
+              value="{{ overrides[field] if field in overrides else '' }}"
+              :placeholder="placeholder('{{ field }}')"
+              class="w-full px-2 py-1 text-xs border border-slate-300 rounded focus:outline-none focus:ring-1 focus:ring-emerald-500 tabular-nums"
+            />
+          </div>
+          {% endfor %}
+        </div>
+        <p class="px-3 pb-3 text-[10px] text-slate-400 leading-snug">
+          只覆盖 filter 类参数（delta / dte / strike 窗口 / top_n）。
+          intent-defining 字段（side / rank_by）和项目级硬规则（exclude_earnings_dte）不可改。
+        </p>
+      </details>
 
       <div class="flex justify-end gap-2 pt-2">
         <button

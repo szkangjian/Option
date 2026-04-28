@@ -58,7 +58,14 @@ from options_tool.domain.iv_stats import IVPoint, compute_stats
 from options_tool.domain.roll_simulator import RollQuote, simulate_rolls
 from options_tool.ibkr import MultiAccountClient
 from options_tool.jobs import make_scheduler
-from options_tool.settings import get_settings, load_alerts
+from options_tool.settings import (
+    OVERRIDABLE_PRESET_FIELDS,
+    PresetOverrideError,
+    get_settings,
+    load_alerts,
+    load_intents,
+    validate_preset_overrides,
+)
 from options_tool.sync import sync_positions
 
 logger = logging.getLogger(__name__)
@@ -707,6 +714,8 @@ async def symbol_new_modal(request: Request) -> HTMLResponse:
             "intents": INTENT_VALUES,
             "sym": None,
             "error": None,
+            "overridable_fields": OVERRIDABLE_PRESET_FIELDS,
+            "intent_defaults": _intent_defaults_for_template(),
         },
     )
 
@@ -726,6 +735,7 @@ async def symbol_edit_modal(request: Request, symbol: str) -> HTMLResponse:
             "target_buy_price": sym.target_buy_price,
             "notes": sym.notes,
             "hidden": sym.hidden,
+            "preset_overrides": sym.preset_overrides or {},
         }
     return templates.TemplateResponse(
         request,
@@ -735,6 +745,8 @@ async def symbol_edit_modal(request: Request, symbol: str) -> HTMLResponse:
             "intents": INTENT_VALUES,
             "sym": sym_view,
             "error": None,
+            "overridable_fields": OVERRIDABLE_PRESET_FIELDS,
+            "intent_defaults": _intent_defaults_for_template(),
         },
     )
 
@@ -753,21 +765,36 @@ async def symbol_create(
     if not symbol or intent not in INTENT_VALUES:
         return _form_error(request, "create", symbol, intent, "无效的输入")
 
+    raw_form = dict(await request.form())
+    try:
+        overrides = _parse_overrides_from_form(raw_form)
+    except PresetOverrideError as e:
+        return _form_error(
+            request, "create", symbol, intent, str(e),
+            preset_overrides={
+                k.removeprefix("override_"): v for k, v in raw_form.items()
+                if k.startswith("override_") and v
+            },
+        )
+
     with session_scope() as session:
         if session.get(Symbol, symbol):
             return _form_error(
-                request, "create", symbol, intent, f"{symbol} 已经在跟踪列表里"
+                request, "create", symbol, intent, f"{symbol} 已经在跟踪列表里",
+                preset_overrides=overrides,
             )
 
     if not await _validate_ticker(symbol):
         return _form_error(
-            request, "create", symbol, intent, f"IBKR 找不到 {symbol}（拼错了？）"
+            request, "create", symbol, intent, f"IBKR 找不到 {symbol}（拼错了？）",
+            preset_overrides=overrides,
         )
 
     target = _parse_float(target_buy_price)
     if intent == "WANT_TO_OWN" and target is None:
         return _form_error(
-            request, "create", symbol, intent, "WANT_TO_OWN 需要 target_buy_price"
+            request, "create", symbol, intent, "WANT_TO_OWN 需要 target_buy_price",
+            preset_overrides=overrides,
         )
 
     with session_scope() as session:
@@ -780,6 +807,7 @@ async def symbol_create(
                 weekly_ok=weekly_ok,
                 notes=notes.strip() or None,
                 hidden=False,
+                preset_overrides=overrides or None,
             )
         )
 
@@ -799,10 +827,22 @@ async def symbol_update(
     symbol = symbol.upper()
     if intent not in INTENT_VALUES:
         return _form_error(request, "edit", symbol, intent, "未知 intent")
+    raw_form = dict(await request.form())
+    try:
+        overrides = _parse_overrides_from_form(raw_form)
+    except PresetOverrideError as e:
+        return _form_error(
+            request, "edit", symbol, intent, str(e),
+            preset_overrides={
+                k.removeprefix("override_"): v for k, v in raw_form.items()
+                if k.startswith("override_") and v
+            },
+        )
     target = _parse_float(target_buy_price)
     if intent == "WANT_TO_OWN" and target is None:
         return _form_error(
-            request, "edit", symbol, intent, "WANT_TO_OWN 需要 target_buy_price"
+            request, "edit", symbol, intent, "WANT_TO_OWN 需要 target_buy_price",
+            preset_overrides=overrides,
         )
     with session_scope() as session:
         sym = session.get(Symbol, symbol)
@@ -813,6 +853,7 @@ async def symbol_update(
         sym.wheel_enabled = wheel_enabled
         sym.weekly_ok = weekly_ok
         sym.notes = notes.strip() or None
+        sym.preset_overrides = overrides or None
 
     return _list_with_close_modal(
         request, flash=f"已更新 {symbol}", refresh_symbol=symbol
@@ -866,12 +907,25 @@ async def symbol_detail(request: Request, symbol: str) -> HTMLResponse:
 @app.post("/symbols/{symbol}/advise", response_class=HTMLResponse)
 async def symbol_advise(request: Request, symbol: str) -> HTMLResponse:
     symbol = symbol.upper()
-    candidates = await advise_symbol(symbol)
+    result = await advise_symbol(symbol)
+    # _detail_data reads spot from chain_cache. fetch_and_cache_chain just
+    # upserted the sentinel row when the chain came back empty, so the cached
+    # value should now match result.spot — but if either path wrote nothing,
+    # fall back to result.spot so the UI doesn't regress to "未缓存".
     data = _detail_data(symbol)
+    if data.get("spot") is None and result.spot is not None:
+        data["spot"] = result.spot
+        data["spot_at"] = datetime.now(timezone.utc)
     return templates.TemplateResponse(
         request,
         "partials/detail.html",
-        {**data, "candidates": candidates, "loading": False},
+        {
+            **data,
+            "candidates": result.candidates,
+            "advise_reason": result.reason,
+            "advise_source": result.source,
+            "loading": False,
+        },
     )
 
 
@@ -940,13 +994,52 @@ def _parse_float(s: str) -> float | None:
         return None
 
 
+def _intent_defaults_for_template() -> dict[str, dict]:
+    """Map ``{intent: {field: default_value}}`` for the modal placeholders.
+
+    Reads the current ``intents.yaml`` so the form shows what each field
+    *would* be if the user leaves the override blank. ``None`` defaults
+    (e.g., delta_min for INCOME) become an empty string so Jinja's
+    ``placeholder`` ends up blank rather than literal "None".
+    """
+    out: dict[str, dict] = {}
+    for intent, preset in load_intents().items():
+        defaults = {}
+        for field in OVERRIDABLE_PRESET_FIELDS:
+            value = getattr(preset, field, None)
+            defaults[field] = "" if value is None else value
+        out[intent] = defaults
+    return out
+
+
+def _parse_overrides_from_form(raw: dict[str, str]) -> dict:
+    """Pull ``override_*`` form fields out of the POST body, validate, return
+    a clean override dict (only set fields included). Raises
+    ``PresetOverrideError`` on any invalid input.
+    """
+    candidate: dict = {}
+    for field in OVERRIDABLE_PRESET_FIELDS:
+        v = (raw.get(f"override_{field}") or "").strip()
+        if v:
+            candidate[field] = v
+    return validate_preset_overrides(candidate)
+
+
 def _form_error(
-    request: Request, mode: str, symbol: str, intent: str, msg: str
+    request: Request,
+    mode: str,
+    symbol: str,
+    intent: str,
+    msg: str,
+    *,
+    preset_overrides: dict | None = None,
 ) -> HTMLResponse:
     """Re-render the modal with an inline error.
 
     Form's ``hx-target=#modal-root`` so the modal partial we return goes
-    straight back into the modal slot via the main swap.
+    straight back into the modal slot via the main swap. ``preset_overrides``
+    preserves whatever the user typed in the override section so they don't
+    have to retype on a validation failure.
     """
     sym_view = {
         "symbol": symbol,
@@ -955,11 +1048,19 @@ def _form_error(
         "target_buy_price": None,
         "notes": None,
         "hidden": False,
+        "preset_overrides": preset_overrides or {},
     }
     return templates.TemplateResponse(
         request,
         "partials/symbol_form_modal.html",
-        {"mode": mode, "intents": INTENT_VALUES, "sym": sym_view, "error": msg},
+        {
+            "mode": mode,
+            "intents": INTENT_VALUES,
+            "sym": sym_view,
+            "error": msg,
+            "overridable_fields": OVERRIDABLE_PRESET_FIELDS,
+            "intent_defaults": _intent_defaults_for_template(),
+        },
     )
 
 

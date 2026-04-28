@@ -31,7 +31,7 @@ async def main() -> int:
 
     async with MultiAccountClient([accounts[0]]) as multi:
         client = multi.clients[0]
-        quotes = await client.fetch_option_chain(
+        result = await client.fetch_option_chain(
             SYMBOL,
             side="PUT",
             dte_min=DTE_MIN,
@@ -40,6 +40,7 @@ async def main() -> int:
             strike_window_pct=STRIKE_WINDOW_PCT,
             max_strikes_per_side=MAX_STRIKES_PER_SIDE,
         )
+        quotes = result.quotes
 
     if not quotes:
         print(f"No quotes returned for {SYMBOL}.")

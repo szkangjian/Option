@@ -11,7 +11,9 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 
 from sqlalchemy import select
@@ -31,10 +33,82 @@ from options_tool.domain.intents import (
     FilterableQuote,
     is_scannable,
 )
-from options_tool.ibkr import MultiAccountClient, OptionQuote
-from options_tool.settings import IntentPreset, load_accounts, load_intents
+from options_tool.ibkr import ChainFetchResult, MultiAccountClient, OptionQuote
+from options_tool.settings import (
+    IntentPreset,
+    apply_preset_overrides,
+    load_accounts,
+    load_intents,
+)
+from options_tool.yahoo import fetch_chain_yahoo
+
+# Exceptions raised when IB Gateway is unreachable. We catch these in the
+# chain fetcher and either try Yahoo or surface a friendly reason — the prior
+# behaviour was to bubble them up as 500s.
+_IB_CONNECTION_ERRORS: tuple[type[BaseException], ...] = (
+    asyncio.TimeoutError,
+    ConnectionError,        # ConnectionRefusedError / ConnectionResetError / etc.
+    OSError,                # "Peer closed connection", etc.
+)
 
 logger = logging.getLogger(__name__)
+
+
+# Sentinel PK used to store spot-only rows in chain_cache without touching
+# schema. Any real option row has expiry >= today and strike > 0, so this
+# cannot collide. Kept here (not jobs.py) because both the scheduler and the
+# on-demand advisor write spot via this helper.
+_SPOT_SENTINEL_EXPIRY = date(1970, 1, 1)
+_SPOT_SENTINEL_STRIKE = 0.0
+_SPOT_SENTINEL_RIGHT = "C"
+
+
+def upsert_spot(symbol: str, price: float) -> None:
+    """Write the latest spot for ``symbol`` to the chain_cache sentinel row.
+
+    Used by the scheduler's spot-only watch path AND by ``fetch_and_cache_chain``
+    when the chain itself returns empty (so the UI still has a price to show
+    next to the 'no candidates' diagnostic).
+    """
+    now = datetime.now(timezone.utc)
+    with session_scope() as session:
+        row = session.get(
+            ChainCache,
+            {
+                "symbol": symbol,
+                "expiry": _SPOT_SENTINEL_EXPIRY,
+                "strike": _SPOT_SENTINEL_STRIKE,
+                "right": _SPOT_SENTINEL_RIGHT,
+            },
+        )
+        if row is None:
+            row = ChainCache(
+                symbol=symbol,
+                expiry=_SPOT_SENTINEL_EXPIRY,
+                strike=_SPOT_SENTINEL_STRIKE,
+                right=_SPOT_SENTINEL_RIGHT,
+            )
+            session.add(row)
+        row.underlying_price = price
+        row.fetched_at = now
+
+
+@dataclass(frozen=True, slots=True)
+class AdviseResult:
+    """Outcome of one ``advise_symbol`` call.
+
+    ``reason`` explains *why* ``candidates`` is empty (e.g. spot far above
+    target, intent not scannable, all candidates rejected by post-filters).
+    ``spot`` carries the latest underlying price even when no candidates
+    survived — UI displays it next to the diagnostic. ``source`` carries the
+    upstream data source label ("ibkr" / "yahoo") so the UI can warn when
+    we fell back to a degraded feed.
+    """
+
+    candidates: list[Candidate]
+    spot: float | None
+    reason: str | None = None
+    source: str = "ibkr"
 
 
 def _quote_to_filterable(q: OptionQuote) -> FilterableQuote:
@@ -99,28 +173,43 @@ def _load_pending_option_order_keys(symbol: str) -> set[tuple[str, float, date]]
 
 async def fetch_and_cache_chain(
     symbol: str, *, intent_override: str | None = None
-) -> tuple[list[OptionQuote], float | None]:
+) -> tuple[list[OptionQuote], float | None, str | None, str]:
     """Pull the option chain for ``symbol`` per its intent preset, write to cache.
 
     Shared between the live ``advise_symbol`` flow and the scheduler's
-    background pre-fetch job. Returns ``(quotes, spot)``; either may be empty
-    if the symbol isn't scannable, no preset matches, or IBKR returned nothing.
+    background pre-fetch job. Returns ``(quotes, spot, reason, source)`` —
+    ``spot`` is populated whenever the underlying price was retrieved (even
+    on empty chain) and is also persisted to the chain_cache sentinel row,
+    so the UI has something to show. ``reason`` carries a user-facing
+    diagnostic when ``quotes`` is empty. ``source`` is "ibkr" on the happy
+    path, "yahoo" when we fell back, or "ibkr" with a connection-error
+    reason when both failed.
+
+    On IB connection failure (Gateway down, clientId collision, timeout) we
+    transparently try Yahoo Finance as a degraded backup. Yahoo data is NOT
+    written to ``chain_cache`` — its IV-derived BS Δ would otherwise mix with
+    IB-grade Greeks downstream.
     """
     presets = load_intents()
     sym = _load_symbol(symbol)
 
     intent = (intent_override or (sym.intent if sym else None) or "").upper()
     if intent not in SCANNABLE_INTENTS:
-        return [], None
+        return [], None, f"intent {intent or '<未设置>'} 不可扫描", "ibkr"
 
-    preset = presets.get(intent)
-    if preset is None:
+    base_preset = presets.get(intent)
+    if base_preset is None:
         logger.error("No preset for intent %r in intents.yaml", intent)
-        return [], None
+        return [], None, f"intents.yaml 缺 intent={intent} 的 preset", "ibkr"
+
+    # Layer per-symbol overrides (filter knobs only) on top of the YAML default.
+    preset = apply_preset_overrides(
+        base_preset, sym.preset_overrides if sym else None
+    )
 
     target = sym.target_buy_price if sym else None
     if intent == "WANT_TO_OWN" and target is None:
-        return [], None
+        return [], None, "WANT_TO_OWN 需先设置 target_buy_price", "ibkr"
 
     strike_max = None
     if intent == "WANT_TO_OWN" and target is not None and preset.strike_max_vs_target:
@@ -129,31 +218,70 @@ async def fetch_and_cache_chain(
     accounts = load_accounts().accounts
     if not accounts:
         logger.error("No accounts configured in config/accounts.yaml")
-        return [], None
+        return [], None, "config/accounts.yaml 未配置任何账户", "ibkr"
 
     today = date.today()
-    quotes: list[OptionQuote] = []
-    spot: float | None = None
-    async with MultiAccountClient([accounts[0]]) as multi:
-        client = multi.clients[0]
-        quotes = await client.fetch_option_chain(
-            symbol,
-            side=preset.side,
-            dte_min=preset.dte_min,
-            dte_max=preset.dte_max,
-            today=today,
-            strike_window_pct=preset.strike_window_pct,
-            max_strikes_per_side=preset.max_strikes_per_side,
-            strike_max=strike_max,
-        )
-        for q in quotes:
-            if q.underlying_price is not None:
-                spot = q.underlying_price
-                break
 
-    if quotes:
-        _persist_chain_cache(quotes)
-    return quotes, spot
+    # Primary: IBKR. On connection-level failure, fall through to Yahoo.
+    ib_error: str | None = None
+    try:
+        async with MultiAccountClient([accounts[0]]) as multi:
+            client = multi.clients[0]
+            result = await client.fetch_option_chain(
+                symbol,
+                side=preset.side,
+                dte_min=preset.dte_min,
+                dte_max=preset.dte_max,
+                today=today,
+                strike_window_pct=preset.strike_window_pct,
+                max_strikes_per_side=preset.max_strikes_per_side,
+                strike_max=strike_max,
+            )
+    except _IB_CONNECTION_ERRORS as exc:
+        ib_error = f"{type(exc).__name__}: {exc}" or type(exc).__name__
+        logger.warning(
+            "IB chain fetch failed for %s — %s; trying Yahoo fallback",
+            symbol, ib_error,
+        )
+        result = None
+
+    if result is None:
+        # IB unreachable — degraded fallback.
+        try:
+            yahoo_result = await fetch_chain_yahoo(
+                symbol,
+                side=preset.side,
+                dte_min=preset.dte_min,
+                dte_max=preset.dte_max,
+                today=today,
+                strike_window_pct=preset.strike_window_pct,
+                max_strikes_per_side=preset.max_strikes_per_side,
+                strike_max=strike_max,
+            )
+        except Exception as yahoo_exc:
+            logger.exception("Yahoo fallback also failed for %s", symbol)
+            return (
+                [], None,
+                f"IB 不可用（{ib_error}）；Yahoo 也失败：{yahoo_exc}",
+                "ibkr",
+            )
+        if yahoo_result.spot is not None:
+            upsert_spot(symbol, yahoo_result.spot)
+        return (
+            yahoo_result.quotes,
+            yahoo_result.spot,
+            yahoo_result.reason,
+            yahoo_result.source,
+        )
+
+    if result.quotes:
+        _persist_chain_cache(result.quotes)
+    elif result.spot is not None:
+        # Chain came back empty but we did get a spot — persist it via the
+        # sentinel row so the detail page can show "$XXX (cached)" next to
+        # the diagnostic instead of a stale "spot 未缓存" hint.
+        upsert_spot(symbol, result.spot)
+    return result.quotes, result.spot, result.reason, result.source
 
 
 async def fetch_and_cache_position_chain(
@@ -182,22 +310,35 @@ async def fetch_and_cache_position_chain(
         return []
 
     today = date.today()
-    async with MultiAccountClient([accounts[0]]) as multi:
-        if not multi.clients:
-            return []
-        client = multi.clients[0]
-        quotes = await client.fetch_option_chain(
-            symbol,
-            side="CALL" if right.upper() == "C" else "PUT",
-            dte_min=dte_min,
-            dte_max=dte_max,
-            today=today,
-            strike_window_pct=strike_window_pct,
-            max_strikes_per_side=max_strikes_per_side,
+    try:
+        async with MultiAccountClient([accounts[0]]) as multi:
+            if not multi.clients:
+                return []
+            client = multi.clients[0]
+            result = await client.fetch_option_chain(
+                symbol,
+                side="CALL" if right.upper() == "C" else "PUT",
+                dte_min=dte_min,
+                dte_max=dte_max,
+                today=today,
+                strike_window_pct=strike_window_pct,
+                max_strikes_per_side=max_strikes_per_side,
+            )
+    except _IB_CONNECTION_ERRORS as exc:
+        # Roll candidate prefetch is best-effort; if IB is down the user just
+        # sees an empty Roll table on the detail page. No Yahoo fallback here:
+        # Roll simulator math depends on per-contract Δ/IV that BS-estimated
+        # numbers would distort.
+        logger.warning(
+            "position-side chain fetch failed for %s %s — %s: %s",
+            symbol, right, type(exc).__name__, exc,
         )
-    if quotes:
-        _persist_chain_cache(quotes)
-    return quotes
+        return []
+    if result.quotes:
+        _persist_chain_cache(result.quotes)
+    elif result.spot is not None:
+        upsert_spot(symbol, result.spot)
+    return result.quotes
 
 
 def _persist_chain_cache(quotes: list[OptionQuote]) -> None:
@@ -254,13 +395,11 @@ async def advise_symbol(
     symbol: str,
     *,
     intent_override: str | None = None,
-) -> list[Candidate]:
+) -> AdviseResult:
     """Run the Opening Advisor end-to-end for a single symbol.
 
-    Returns an empty list when:
-      - the symbol is not tracked
-      - the symbol's intent is not scannable (CORE_HOLD / WATCH)
-      - the chain pull returned no usable quotes
+    Always returns an ``AdviseResult``. When ``candidates`` is empty, ``reason``
+    explains why and ``spot`` (if obtained) is still populated for UI display.
     """
     presets = load_intents()
     sym = _load_symbol(symbol)
@@ -268,25 +407,49 @@ async def advise_symbol(
     intent = (intent_override or (sym.intent if sym else None) or "").upper()
     if intent not in SCANNABLE_INTENTS:
         logger.info("Symbol %s intent=%r is not scannable", symbol, intent)
-        return []
+        return AdviseResult(
+            candidates=[],
+            spot=None,
+            reason=f"intent {intent or '<未设置>'} 不可扫描（仅 INCOME / TRADE / WANT_TO_OWN 会被扫描）",
+        )
 
-    preset: IntentPreset | None = presets.get(intent)
-    if preset is None:
-        return []
+    base_preset: IntentPreset | None = presets.get(intent)
+    if base_preset is None:
+        return AdviseResult(
+            candidates=[],
+            spot=None,
+            reason=f"intents.yaml 缺 intent={intent} 的 preset",
+        )
+    # Same merge rule as fetch_and_cache_chain — rank_chain reads delta_min /
+    # delta_max etc., so it must see the per-symbol-overridden preset too.
+    preset = apply_preset_overrides(
+        base_preset, sym.preset_overrides if sym else None
+    )
 
     target = sym.target_buy_price if sym else None
     if intent == "WANT_TO_OWN" and target is None:
         logger.error("WANT_TO_OWN requires target_buy_price; tag with --target")
-        return []
+        return AdviseResult(
+            candidates=[],
+            spot=None,
+            reason="WANT_TO_OWN 需先设置 target_buy_price",
+        )
 
     today = date.today()
     earnings_dates = _load_earnings(symbol)
 
-    quotes, spot = await fetch_and_cache_chain(symbol, intent_override=intent)
+    quotes, spot, fetch_reason, source = await fetch_and_cache_chain(
+        symbol, intent_override=intent
+    )
 
-    if not quotes or spot is None:
-        logger.warning("No usable quotes returned for %s", symbol)
-        return []
+    if not quotes:
+        logger.warning(
+            "No usable quotes returned for %s — %s",
+            symbol, fetch_reason or "unknown",
+        )
+        return AdviseResult(
+            candidates=[], spot=spot, reason=fetch_reason, source=source,
+        )
 
     candidates = rank_chain(
         [_quote_to_filterable(q) for q in quotes],
@@ -311,4 +474,17 @@ async def advise_symbol(
         ]
 
     _persist_recommendations(symbol, intent, candidates)
-    return candidates
+
+    reason = None
+    if not candidates:
+        # We had quotes; nothing survived rank_chain (delta band, earnings DTE,
+        # etc.) or post-filter for held/pending positions. Tell the user that
+        # explicitly so they don't think the chain pull failed.
+        reason = (
+            f"拉到 {len(quotes)} 条 quote，但全部被 intent 过滤器（delta / earnings / "
+            f"已开仓 / pending order）剔除。考虑在 intents.yaml 放宽 preset"
+        )
+
+    return AdviseResult(
+        candidates=candidates, spot=spot, reason=reason, source=source,
+    )

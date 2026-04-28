@@ -22,6 +22,7 @@ from sqlalchemy import select
 from options_tool.advisor import (
     fetch_and_cache_chain,
     fetch_and_cache_position_chain,
+    upsert_spot,
 )
 from options_tool.alerts import dispatch_alerts
 from options_tool.db import (
@@ -80,35 +81,9 @@ def _watch_symbols() -> list[str]:
     return list(rows)
 
 
-# Sentinel PK used to store spot-only rows in chain_cache without touching schema.
-# Any real option row has expiry >= today and strike > 0, so this cannot collide.
-_SPOT_SENTINEL_EXPIRY = date(1970, 1, 1)
-_SPOT_SENTINEL_STRIKE = 0.0
-_SPOT_SENTINEL_RIGHT = "C"
-
-
-def _upsert_spot(symbol: str, price: float) -> None:
-    now = datetime.now(timezone.utc)
-    with session_scope() as session:
-        row = session.get(
-            ChainCache,
-            {
-                "symbol": symbol,
-                "expiry": _SPOT_SENTINEL_EXPIRY,
-                "strike": _SPOT_SENTINEL_STRIKE,
-                "right": _SPOT_SENTINEL_RIGHT,
-            },
-        )
-        if row is None:
-            row = ChainCache(
-                symbol=symbol,
-                expiry=_SPOT_SENTINEL_EXPIRY,
-                strike=_SPOT_SENTINEL_STRIKE,
-                right=_SPOT_SENTINEL_RIGHT,
-            )
-            session.add(row)
-        row.underlying_price = price
-        row.fetched_at = now
+# Spot sentinel + upsert helper now live in options_tool.advisor — both the
+# scheduler's spot-only watch path and the on-demand chain fetcher write spot
+# the same way.
 
 
 def _position_chain_groups(today: date) -> list[tuple[str, str, int]]:
@@ -162,7 +137,7 @@ async def prefetch_chains() -> None:
         ok = 0
         for sym in scannable:
             try:
-                quotes, _spot = await fetch_and_cache_chain(sym)
+                quotes, _spot, _reason, _source = await fetch_and_cache_chain(sym)
                 if quotes:
                     ok += 1
             except asyncio.CancelledError:
@@ -216,7 +191,7 @@ async def prefetch_chains() -> None:
                     logger.exception("prefetch_chains: spot %s failed", sym)
                     continue
                 if price is not None:
-                    _upsert_spot(sym, price)
+                    upsert_spot(sym, price)
                     ok += 1
             logger.info("prefetch_chains: %d/%d spots refreshed", ok, len(watch))
 

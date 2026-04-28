@@ -13,15 +13,16 @@ async def main() -> None:
     async with MultiAccountClient([accounts[0]]) as multi:
         c = multi.clients[0]
         # Pull URA INCOME-window calls
-        quotes = await c.fetch_option_chain(
+        result = await c.fetch_option_chain(
             "URA",
             side="CALL",
             dte_min=30,
             dte_max=45,
             today=date(2026, 4, 19),
         )
+        quotes = result.quotes
 
-    print(f"Got {len(quotes)} quotes\n")
+    print(f"Got {len(quotes)} quotes (spot={result.spot} reason={result.reason})\n")
     print(f"{'Expiry':<12} {'K':>7} {'R':<2} {'bid':>6} {'ask':>6} {'last':>6} "
           f"{'delta':>7} {'iv':>6} {'OI':>6}")
     for q in quotes:

@@ -19,6 +19,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     CheckConstraint,
     Date,
@@ -95,6 +96,13 @@ class Symbol(Base):
     # running the advisor. Liquidity-driven setting — high-volume names like
     # SPY / NVDA can use weeklies; thin tickers like URA stick to monthlies.
     weekly_ok: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    # Per-symbol overrides on the intent preset's filter knobs (delta_min,
+    # delta_max, dte_min, dte_max, strike_window_pct, max_strikes_per_side,
+    # strike_max_vs_target, top_n). Stored as JSON; only the keys present
+    # override the intent default. Bound to the symbol — survives wheel
+    # auto-flip across intents (the user is expected to re-review after a
+    # flip if the override no longer makes sense).
+    preset_overrides: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=_utcnow, onupdate=_utcnow
     )
@@ -371,6 +379,7 @@ def _apply_inplace_migrations(engine: Engine) -> None:
     additions = [
         ("symbols", "hidden", "BOOLEAN NOT NULL DEFAULT 0"),
         ("symbols", "weekly_ok", "BOOLEAN NOT NULL DEFAULT 0"),
+        ("symbols", "preset_overrides", "JSON"),
     ]
     with engine.begin() as conn:
         for table, col, ddl in additions:

@@ -41,6 +41,26 @@ _MAX_STRIKES_PER_SIDE = 20
 _TICKER_WAIT_SECONDS = 4.0
 
 
+# Per-(host, port, clientId) connection lock. IB Gateway rejects a second
+# connection on a clientId that's already in use (Error 326) — and we have
+# at least two coroutines that compete for the same clientId: the web
+# /advise route and the scheduler's prefetch_chains. Without this lock,
+# whoever lost the race got a 10s TimeoutError.
+#
+# All FastAPI + APScheduler work runs in a single asyncio event loop so a
+# plain ``asyncio.Lock`` (not thread-safe but loop-local) is sufficient.
+_connection_locks: dict[tuple[str, int, int], asyncio.Lock] = {}
+
+
+def _get_connection_lock(host: str, port: int, client_id: int) -> asyncio.Lock:
+    key = (host, port, client_id)
+    lock = _connection_locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _connection_locks[key] = lock
+    return lock
+
+
 # ---- Data transfer objects -------------------------------------------------
 
 
@@ -137,6 +157,26 @@ class IVHistoryRow:
 
 
 @dataclass(frozen=True, slots=True)
+class ChainFetchResult:
+    """Outcome of one ``fetch_option_chain`` call.
+
+    ``reason`` is set whenever ``quotes`` is empty so the caller can surface
+    a user-facing diagnostic instead of a generic "no candidates". ``spot`` is
+    populated whenever the underlying spot fetch succeeded — even when the
+    chain itself was filtered down to nothing — so the UI can still display
+    the price and the user can sanity-check their target / strike window.
+    ``source`` identifies where the data came from ("ibkr" by default, "yahoo"
+    when the IB pull failed and we fell back) so the UI can show a degraded-mode
+    banner.
+    """
+
+    quotes: list["OptionQuote"]
+    spot: float | None
+    reason: str | None
+    source: str = "ibkr"
+
+
+@dataclass(frozen=True, slots=True)
 class OptionQuote:
     """One option chain row with greeks. All numeric fields may be None when
     market data hasn't populated (illiquid strike, after-hours, etc.).
@@ -185,6 +225,7 @@ class IBClient:
     def __init__(self, cfg: AccountConfig) -> None:
         self.cfg = cfg
         self._ib = IB()
+        self._lock_held = False
 
     async def __aenter__(self) -> "IBClient":
         await self.connect()
@@ -199,14 +240,29 @@ class IBClient:
         # reqAutoOpenOrders / reqExecutions on every connect, which IB Gateway
         # in read-only mode flags as "API write permission required" with a
         # popup. We never place orders, so positions are all we need at startup.
-        await self._ib.connectAsync(
-            self.cfg.host,
-            self.cfg.port,
-            clientId=self.cfg.client_id,
-            timeout=timeout,
-            readonly=True,
-            fetchFields=StartupFetch.POSITIONS,
+        #
+        # Acquire the per-clientId lock BEFORE connecting and hold it until
+        # disconnect() — otherwise a second coroutine using the same clientId
+        # collides with us mid-session and IB Gateway nukes the connection.
+        lock = _get_connection_lock(
+            self.cfg.host, self.cfg.port, self.cfg.client_id
         )
+        await lock.acquire()
+        self._lock_held = True
+        try:
+            await self._ib.connectAsync(
+                self.cfg.host,
+                self.cfg.port,
+                clientId=self.cfg.client_id,
+                timeout=timeout,
+                readonly=True,
+                fetchFields=StartupFetch.POSITIONS,
+            )
+        except BaseException:
+            # Connect failed — release lock so the next caller can retry.
+            self._lock_held = False
+            lock.release()
+            raise
         managed = self._ib.managedAccounts()
         if self.cfg.account_code not in managed:
             logger.warning(
@@ -221,6 +277,11 @@ class IBClient:
     def disconnect(self) -> None:
         if self._ib.isConnected():
             self._ib.disconnect()
+        if self._lock_held:
+            _get_connection_lock(
+                self.cfg.host, self.cfg.port, self.cfg.client_id
+            ).release()
+            self._lock_held = False
 
     @property
     def ib(self) -> IB:
@@ -498,13 +559,17 @@ class IBClient:
         strike_window_pct: float = _STRIKE_WINDOW_PCT,
         max_strikes_per_side: int = _MAX_STRIKES_PER_SIDE,
         strike_max: float | None = None,
-    ) -> list[OptionQuote]:
+    ) -> ChainFetchResult:
         """Fetch a filtered option chain for ``symbol``.
 
         - ``side``: "CALL" for CC scans, "PUT" for CSP scans.
         - ``dte_min`` / ``dte_max``: select expiries inside this window.
         - ``strike_window_pct``: keep strikes within ±X% of spot.
         - ``strike_max``: hard upper bound on strike (used by WANT_TO_OWN).
+
+        Returns a ``ChainFetchResult`` carrying ``spot`` even when the chain
+        is filtered down to nothing — callers (advisor, UI) need the price to
+        explain why no strikes survived.
         """
         today = today or datetime.now(timezone.utc).date()
 
@@ -514,7 +579,11 @@ class IBClient:
         spot = await self.fetch_spot(symbol)
         if spot is None:
             logger.warning("No spot price for %s — chain fetch aborted", symbol)
-            return []
+            return ChainFetchResult(
+                quotes=[],
+                spot=None,
+                reason="无法获取 spot — IB Gateway 未返回价格（market closed 且无 frozen 数据？）",
+            )
 
         # 2) Get available expirations + strikes from secDef
         params_list = await self._ib.reqSecDefOptParamsAsync(
@@ -522,7 +591,9 @@ class IBClient:
         )
         if not params_list:
             logger.warning("No option params for %s", symbol)
-            return []
+            return ChainFetchResult(
+                quotes=[], spot=spot, reason="IB 未返回 secDef option params"
+            )
         # Prefer SMART exchange row when available.
         params = next((p for p in params_list if p.exchange == "SMART"), params_list[0])
 
@@ -540,7 +611,11 @@ class IBClient:
             logger.info(
                 "No expirations in DTE window [%d,%d] for %s", dte_min, dte_max, symbol
             )
-            return []
+            return ChainFetchResult(
+                quotes=[],
+                spot=spot,
+                reason=f"DTE 窗口 [{dte_min},{dte_max}] 内无可用 expiry",
+            )
 
         # 4) Filter strikes
         all_strikes = sorted(params.strikes)
@@ -553,7 +628,18 @@ class IBClient:
             side=side,
         )
         if not candidate_strikes:
-            return []
+            reason = _explain_empty_strikes(
+                side=side,
+                spot=spot,
+                window_pct=strike_window_pct,
+                strike_max=strike_max,
+            )
+            logger.info(
+                "No candidate strikes for %s %s (spot=%.2f window=±%.0f%% strike_max=%s)",
+                symbol, side, spot, strike_window_pct * 100,
+                f"{strike_max:.2f}" if strike_max is not None else "—",
+            )
+            return ChainFetchResult(quotes=[], spot=spot, reason=reason)
 
         # 5) Build + qualify Option contracts
         contracts = [
@@ -564,7 +650,11 @@ class IBClient:
         qualified = await self._ib.qualifyContractsAsync(*contracts)
         qualified = [c for c in qualified if getattr(c, "conId", 0)]
         if not qualified:
-            return []
+            return ChainFetchResult(
+                quotes=[],
+                spot=spot,
+                reason="IB 未能 qualify 任何 option contract（合约可能已下架）",
+            )
 
         # 6) Snapshot tickers (with greeks via implied_vol on the modelGreeks side)
         tickers = await self._ib.reqTickersAsync(*qualified)
@@ -574,7 +664,8 @@ class IBClient:
         # to populate.
         await asyncio.sleep(_TICKER_WAIT_SECONDS)
 
-        return [_ticker_to_quote(t, symbol, spot) for t in tickers if t.contract is not None]
+        quotes = [_ticker_to_quote(t, symbol, spot) for t in tickers if t.contract is not None]
+        return ChainFetchResult(quotes=quotes, spot=spot, reason=None)
 
 
 # ---- Multi-account fanout --------------------------------------------------
@@ -596,8 +687,14 @@ class MultiAccountClient:
         return self
 
     async def __aexit__(self, *_exc) -> None:
+        # Disconnect every client even if one of them raises — otherwise we'd
+        # leak the per-clientId connection lock for any client past the failure
+        # point, and the next /advise call would block forever.
         for c in self._clients:
-            c.disconnect()
+            try:
+                c.disconnect()
+            except Exception:
+                logger.exception("disconnect failed for clientId=%s", c.cfg.client_id)
 
     async def fetch_all_positions(
         self,
@@ -682,6 +779,37 @@ def _parse_ib_expiry(s: str) -> date:
     if len(s) == 6:
         return datetime.strptime(s + "01", "%Y%m%d").date()
     raise ValueError(f"Unrecognized IB expiry format: {s!r}")
+
+
+def _explain_empty_strikes(
+    *,
+    side: str,
+    spot: float,
+    window_pct: float,
+    strike_max: float | None,
+) -> str:
+    """User-facing explanation when ``_select_strikes`` returned nothing.
+
+    The most common WANT_TO_OWN failure: spot has run far above target, so
+    the lower bound of the strike window (``spot * (1 - window_pct)``) is
+    already above ``strike_max`` (= target × cap). We compute that explicitly
+    so the user knows whether to bump the target or widen the window.
+    """
+    if side.upper() == "PUT" and strike_max is not None:
+        lower = spot * (1.0 - window_pct)
+        if lower > strike_max:
+            return (
+                f"spot ${spot:.2f} 已远离 target — strike_window 下沿 "
+                f"${lower:.2f} > strike_max ${strike_max:.2f}（target × cap）。"
+                f"考虑提高 target 或加大 strike_window_pct"
+            )
+        return (
+            f"strike_max ${strike_max:.2f} 与 spot ${spot:.2f} ±{window_pct*100:.0f}% "
+            f"窗口的交集中没有可用 strike"
+        )
+    return (
+        f"spot ${spot:.2f} ±{window_pct*100:.0f}% 窗口内无可用 strike"
+    )
 
 
 def _select_strikes(

@@ -126,6 +126,93 @@ class IntentPreset(BaseModel):
     top_n: int = 5
 
 
+# Per-symbol overrides may only touch *filter* knobs, never intent-defining
+# (``side`` / ``rank_by``) or project-level hard rules (``exclude_earnings_dte``).
+OVERRIDABLE_PRESET_FIELDS: tuple[str, ...] = (
+    "delta_min",
+    "delta_max",
+    "dte_min",
+    "dte_max",
+    "strike_window_pct",
+    "max_strikes_per_side",
+    "strike_max_vs_target",
+    "top_n",
+)
+
+
+class PresetOverrideError(ValueError):
+    """Raised when a per-symbol override dict has unknown / invalid fields."""
+
+
+def validate_preset_overrides(raw: dict | None) -> dict:
+    """Coerce a user-supplied override dict to the right types and reject
+    unknown keys / out-of-range values.
+
+    Returns a *new* dict containing only well-typed entries. Empty input → {}.
+    Raises ``PresetOverrideError`` with a human-readable message on bad input.
+    """
+    if not raw:
+        return {}
+    out: dict = {}
+    for key, value in raw.items():
+        if key not in OVERRIDABLE_PRESET_FIELDS:
+            raise PresetOverrideError(
+                f"未知 override 字段 {key!r}（可用：{', '.join(OVERRIDABLE_PRESET_FIELDS)}）"
+            )
+        if value is None or value == "":
+            continue  # treat blank as "no override"
+        if key in {"dte_min", "dte_max", "max_strikes_per_side", "top_n"}:
+            try:
+                coerced: float | int = int(value)
+            except (TypeError, ValueError) as exc:
+                raise PresetOverrideError(f"{key} 必须是整数（收到 {value!r}）") from exc
+            if coerced < 0:
+                raise PresetOverrideError(f"{key} 不能为负（收到 {coerced}）")
+        else:
+            try:
+                coerced = float(value)
+            except (TypeError, ValueError) as exc:
+                raise PresetOverrideError(f"{key} 必须是数字（收到 {value!r}）") from exc
+            if key in {"delta_min", "delta_max"} and not (0.0 <= coerced <= 1.0):
+                raise PresetOverrideError(f"{key} 必须在 [0, 1]（收到 {coerced}）")
+            if key == "strike_window_pct" and not (0.0 < coerced <= 2.0):
+                raise PresetOverrideError(
+                    f"strike_window_pct 必须在 (0, 2]（收到 {coerced}）"
+                )
+            if key == "strike_max_vs_target" and not (0.0 < coerced <= 5.0):
+                raise PresetOverrideError(
+                    f"strike_max_vs_target 必须在 (0, 5]（收到 {coerced}）"
+                )
+        out[key] = coerced
+    # Cross-field sanity checks
+    if "delta_min" in out and "delta_max" in out and out["delta_min"] > out["delta_max"]:
+        raise PresetOverrideError(
+            f"delta_min ({out['delta_min']}) 不能 > delta_max ({out['delta_max']})"
+        )
+    if "dte_min" in out and "dte_max" in out and out["dte_min"] > out["dte_max"]:
+        raise PresetOverrideError(
+            f"dte_min ({out['dte_min']}) 不能 > dte_max ({out['dte_max']})"
+        )
+    return out
+
+
+def apply_preset_overrides(
+    preset: IntentPreset, overrides: dict | None
+) -> IntentPreset:
+    """Return a new ``IntentPreset`` with ``overrides`` applied on top.
+
+    ``overrides`` is assumed to have already passed ``validate_preset_overrides``
+    (the web/CLI entry points do this); unknown keys are ignored defensively.
+    Empty / None overrides → preset returned unchanged.
+    """
+    if not overrides:
+        return preset
+    patch = {k: v for k, v in overrides.items() if k in OVERRIDABLE_PRESET_FIELDS}
+    if not patch:
+        return preset
+    return preset.model_copy(update=patch)
+
+
 class AlertsConfig(BaseModel):
     quiet_hours_start: str = "22:00"
     quiet_hours_end: str = "07:00"
