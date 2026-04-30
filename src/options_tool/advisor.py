@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 
 from sqlalchemy import select
@@ -27,10 +27,14 @@ from options_tool.db import (
     Symbol,
     session_scope,
 )
-from options_tool.domain.advisor_open import Candidate, rank_chain
+from options_tool.domain.advisor_open import Candidate, rank_chain_with_rejections
 from options_tool.domain.intents import (
+    REASON_ALREADY_HELD,
+    REASON_LABELS,
+    REASON_PENDING_ORDER,
     SCANNABLE_INTENTS,
     FilterableQuote,
+    Rejection,
     is_scannable,
 )
 from options_tool.ibkr import ChainFetchResult, MultiAccountClient, OptionQuote
@@ -94,6 +98,23 @@ def upsert_spot(symbol: str, price: float) -> None:
 
 
 @dataclass(frozen=True, slots=True)
+class RejectionGroup:
+    """One reason bucket + the dropped contracts that share it.
+
+    Sent to the UI so the user can drill into "why was nothing recommended".
+    ``items`` is sorted by ``(expiry, strike)`` for stable display.
+    """
+
+    code: str
+    label: str
+    items: list[Rejection]
+
+    @property
+    def count(self) -> int:
+        return len(self.items)
+
+
+@dataclass(frozen=True, slots=True)
 class AdviseResult:
     """Outcome of one ``advise_symbol`` call.
 
@@ -103,12 +124,41 @@ class AdviseResult:
     survived — UI displays it next to the diagnostic. ``source`` carries the
     upstream data source label ("ibkr" / "yahoo") so the UI can warn when
     we fell back to a degraded feed.
+    ``rejection_groups`` is per-quote rejection rationale, aggregated by
+    reason for the collapsible UI panel. ``quotes_total`` is the count of
+    raw quotes pulled from upstream before any filter applied.
     """
 
     candidates: list[Candidate]
     spot: float | None
     reason: str | None = None
     source: str = "ibkr"
+    rejection_groups: list[RejectionGroup] = field(default_factory=list)
+    quotes_total: int = 0
+
+
+def _build_rejection_groups(rejections: list[Rejection]) -> list[RejectionGroup]:
+    """Bucket ``rejections`` by ``reason_code``, sort items + buckets.
+
+    Buckets are sorted by ``count`` desc (then code asc for determinism).
+    Items within a bucket are sorted by ``(expiry, strike)``.
+    """
+    by_code: dict[str, list[Rejection]] = {}
+    for r in rejections:
+        by_code.setdefault(r.reason_code, []).append(r)
+
+    groups: list[RejectionGroup] = []
+    for code, items in by_code.items():
+        items.sort(key=lambda r: (r.expiry, r.strike))
+        groups.append(
+            RejectionGroup(
+                code=code,
+                label=REASON_LABELS.get(code, code),
+                items=items,
+            )
+        )
+    groups.sort(key=lambda g: (-g.count, g.code))
+    return groups
 
 
 def _quote_to_filterable(q: OptionQuote) -> FilterableQuote:
@@ -171,8 +221,33 @@ def _load_pending_option_order_keys(symbol: str) -> set[tuple[str, float, date]]
     return {(r, s, e) for r, s, e in rows if r and s and e}
 
 
+def _load_open_short_legs(symbol: str) -> list[tuple[str, date, float]]:
+    """Open short option legs on this symbol, as ``(right, expiry, strike)``.
+
+    Used by ``advise_symbol`` to piggyback position-side quotes onto the
+    intent-side chain fetch. The position legs almost always fall outside
+    the intent preset's strike/DTE window, so without this they'd only get
+    refreshed by the every-5-min scheduler — leaving OI / bid / ask stale
+    on the open positions table right after the user clicks Run advisor.
+    """
+    today = date.today()
+    with session_scope() as session:
+        rows = session.execute(
+            select(OptionPosition.right, OptionPosition.expiry, OptionPosition.strike)
+            .where(OptionPosition.symbol == symbol)
+            .where(OptionPosition.qty < 0)
+        ).all()
+    return [
+        (r, e, float(s)) for r, e, s in rows
+        if r and e and s and e >= today
+    ]
+
+
 async def fetch_and_cache_chain(
-    symbol: str, *, intent_override: str | None = None
+    symbol: str,
+    *,
+    intent_override: str | None = None,
+    extra_contracts: list[tuple[str, date, float]] | None = None,
 ) -> tuple[list[OptionQuote], float | None, str | None, str]:
     """Pull the option chain for ``symbol`` per its intent preset, write to cache.
 
@@ -184,6 +259,11 @@ async def fetch_and_cache_chain(
     diagnostic when ``quotes`` is empty. ``source`` is "ibkr" on the happy
     path, "yahoo" when we fell back, or "ibkr" with a connection-error
     reason when both failed.
+
+    ``extra_contracts``: list of ``(right, expiry, strike)`` tuples to fetch
+    in addition to the intent-side filter. Same connection, same OI pass —
+    no extra latency. Used for open-position legs that fall outside the
+    intent preset window.
 
     On IB connection failure (Gateway down, clientId collision, timeout) we
     transparently try Yahoo Finance as a degraded backup. Yahoo data is NOT
@@ -236,6 +316,7 @@ async def fetch_and_cache_chain(
                 strike_window_pct=preset.strike_window_pct,
                 max_strikes_per_side=preset.max_strikes_per_side,
                 strike_max=strike_max,
+                extra_contracts=extra_contracts,
             )
     except _IB_CONNECTION_ERRORS as exc:
         ib_error = f"{type(exc).__name__}: {exc}" or type(exc).__name__
@@ -364,8 +445,14 @@ def _persist_chain_cache(quotes: list[OptionQuote]) -> None:
             row.theta = q.theta
             row.vega = q.vega
             row.iv = q.iv
-            row.open_interest = q.open_interest
-            row.volume = q.volume
+            # OI / volume: don't clobber a prior cached value with None.
+            # The streaming OI pass occasionally misses (rate-limit, slow
+            # tick, stale subscription); preserving the last good number
+            # is better than going dark.
+            if q.open_interest is not None:
+                row.open_interest = q.open_interest
+            if q.volume is not None:
+                row.volume = q.volume
             row.underlying_price = q.underlying_price
             row.fetched_at = now
 
@@ -438,8 +525,13 @@ async def advise_symbol(
     today = date.today()
     earnings_dates = _load_earnings(symbol)
 
+    # Piggyback the open-position legs onto the chain fetch so their
+    # bid/ask/Greeks/OI in chain_cache get refreshed alongside the
+    # advisor's intent-side scan — same connection, no extra latency.
+    extra_contracts = _load_open_short_legs(symbol)
+
     quotes, spot, fetch_reason, source = await fetch_and_cache_chain(
-        symbol, intent_override=intent
+        symbol, intent_override=intent, extra_contracts=extra_contracts,
     )
 
     if not quotes:
@@ -451,7 +543,7 @@ async def advise_symbol(
             candidates=[], spot=spot, reason=fetch_reason, source=source,
         )
 
-    candidates = rank_chain(
+    candidates, rejections = rank_chain_with_rejections(
         [_quote_to_filterable(q) for q in quotes],
         symbol=symbol,
         intent=intent,
@@ -464,27 +556,62 @@ async def advise_symbol(
     )
 
     # Drop candidates the user is already short OR has a pending order on —
-    # no point recommending a contract that's open or in flight.
+    # no point recommending a contract that's open or in flight. Wrap each
+    # drop as a Rejection so the UI's "why empty?" panel surfaces it too.
     held = _load_short_position_keys(symbol)
     pending = _load_pending_option_order_keys(symbol)
-    excluded = held | pending
-    if excluded:
-        candidates = [
-            c for c in candidates if (c.right, c.strike, c.expiry) not in excluded
-        ]
+    if held or pending:
+        kept: list[Candidate] = []
+        for c in candidates:
+            key = (c.right, c.strike, c.expiry)
+            if key in held:
+                rejections.append(
+                    Rejection(
+                        right=c.right, strike=c.strike, expiry=c.expiry,
+                        dte=c.dte, delta=c.delta, mid=c.premium,
+                        reason_code=REASON_ALREADY_HELD,
+                        reason_detail="已是 open short — 不再重复推荐",
+                    )
+                )
+                continue
+            if key in pending:
+                rejections.append(
+                    Rejection(
+                        right=c.right, strike=c.strike, expiry=c.expiry,
+                        dte=c.dte, delta=c.delta, mid=c.premium,
+                        reason_code=REASON_PENDING_ORDER,
+                        reason_detail="该合约已有 working order（开仓 / 平仓）",
+                    )
+                )
+                continue
+            kept.append(c)
+        candidates = kept
 
     _persist_recommendations(symbol, intent, candidates)
 
+    rejection_groups = _build_rejection_groups(rejections)
+
     reason = None
     if not candidates:
-        # We had quotes; nothing survived rank_chain (delta band, earnings DTE,
-        # etc.) or post-filter for held/pending positions. Tell the user that
-        # explicitly so they don't think the chain pull failed.
-        reason = (
-            f"拉到 {len(quotes)} 条 quote，但全部被 intent 过滤器（delta / earnings / "
-            f"已开仓 / pending order）剔除。考虑在 intents.yaml 放宽 preset"
-        )
+        # We had quotes; nothing survived. Surface a short summary; the
+        # template renders ``rejection_groups`` for the detailed breakdown.
+        if rejection_groups:
+            top = rejection_groups[0]
+            reason = (
+                f"拉到 {len(quotes)} 条 quote，全部被剔除 — "
+                f"主因：{top.label}（{top.count} 条）。展开下面查看每条原因"
+            )
+        else:
+            reason = (
+                f"拉到 {len(quotes)} 条 quote，但全部被 intent 过滤器剔除。"
+                "考虑在 intents.yaml 放宽 preset"
+            )
 
     return AdviseResult(
-        candidates=candidates, spot=spot, reason=reason, source=source,
+        candidates=candidates,
+        spot=spot,
+        reason=reason,
+        source=source,
+        rejection_groups=rejection_groups,
+        quotes_total=len(quotes),
     )

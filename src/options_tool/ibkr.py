@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
 from typing import Iterable
 
@@ -39,6 +39,11 @@ _MAX_STRIKES_PER_SIDE = 20
 # How long to let market data stream in before reading the snapshot.
 # 4s is a safe default for liquid US equity options on IB Gateway.
 _TICKER_WAIT_SECONDS = 4.0
+
+# How long to let the streaming OI subscription run before cancelling.
+# Open Interest ticks (generic 27/28) typically arrive within 1-2s; 3s
+# is enough headroom without inflating chain-fetch latency.
+_OI_STREAM_WAIT_SECONDS = 3.0
 
 
 # Per-(host, port, clientId) connection lock. IB Gateway rejects a second
@@ -559,6 +564,7 @@ class IBClient:
         strike_window_pct: float = _STRIKE_WINDOW_PCT,
         max_strikes_per_side: int = _MAX_STRIKES_PER_SIDE,
         strike_max: float | None = None,
+        extra_contracts: list[tuple[str, date, float]] | None = None,
     ) -> ChainFetchResult:
         """Fetch a filtered option chain for ``symbol``.
 
@@ -566,6 +572,11 @@ class IBClient:
         - ``dte_min`` / ``dte_max``: select expiries inside this window.
         - ``strike_window_pct``: keep strikes within ±X% of spot.
         - ``strike_max``: hard upper bound on strike (used by WANT_TO_OWN).
+        - ``extra_contracts``: list of ``(right, expiry, strike)`` tuples to
+          ALSO fetch quotes for, in addition to the intent-side filter. Used
+          by the advisor to refresh open-position legs (which often fall
+          outside the intent's strike/DTE window) under the same connection
+          and OI pass — same latency as the base fetch.
 
         Returns a ``ChainFetchResult`` carrying ``spot`` even when the chain
         is filtered down to nothing — callers (advisor, UI) need the price to
@@ -627,7 +638,9 @@ class IBClient:
             strike_max=strike_max,
             side=side,
         )
-        if not candidate_strikes:
+        if not candidate_strikes and not extra_contracts:
+            # Truly empty: intent filtered everything out AND no extra legs
+            # were piggybacked. Explain why.
             reason = _explain_empty_strikes(
                 side=side,
                 spot=spot,
@@ -640,13 +653,33 @@ class IBClient:
                 f"{strike_max:.2f}" if strike_max is not None else "—",
             )
             return ChainFetchResult(quotes=[], spot=spot, reason=reason)
+        # Intent-side dropped everything but extra_contracts still has work
+        # to do (e.g. WANT_TO_OWN strike-cap excludes everything yet user has
+        # open shorts to refresh). Fall through with empty candidate_strikes.
 
-        # 5) Build + qualify Option contracts
-        contracts = [
-            Option(symbol, exp.strftime("%Y%m%d"), strike, right, "SMART")
-            for exp in candidate_expiries
-            for strike in candidate_strikes
-        ]
+        # 5) Build + qualify Option contracts. Dedupe (right, expiry, strike)
+        # so an extra_contracts entry that already overlaps the intent grid
+        # doesn't get fetched twice.
+        seen: set[tuple[str, date, float]] = set()
+        contracts: list[Option] = []
+        for exp in candidate_expiries:
+            for strike in candidate_strikes:
+                key = (right, exp, float(strike))
+                if key in seen:
+                    continue
+                seen.add(key)
+                contracts.append(
+                    Option(symbol, exp.strftime("%Y%m%d"), strike, right, "SMART")
+                )
+        for r, exp, strike in (extra_contracts or []):
+            key = (r, exp, float(strike))
+            if key in seen:
+                continue
+            seen.add(key)
+            contracts.append(
+                Option(symbol, exp.strftime("%Y%m%d"), float(strike), r, "SMART")
+            )
+
         qualified = await self._ib.qualifyContractsAsync(*contracts)
         qualified = [c for c in qualified if getattr(c, "conId", 0)]
         if not qualified:
@@ -656,15 +689,83 @@ class IBClient:
                 reason="IB 未能 qualify 任何 option contract（合约可能已下架）",
             )
 
-        # 6) Snapshot tickers (with greeks via implied_vol on the modelGreeks side)
-        tickers = await self._ib.reqTickersAsync(*qualified)
-
-        # ib_async's reqTickers is a snapshot; for greeks we typically need a
-        # streaming subscription. We sleep briefly to allow tickPrice + tickOptionComputation
-        # to populate.
+        # 6) Two-pass data fetch — IB doesn't let us get both in one call:
+        #   Pass 1 (frozen, type=2): ``reqTickersAsync`` snapshot →
+        #       bid/ask/last/Greeks. Frozen mode is essential for after-hours
+        #       use because it returns the cached last quote instead of -1.
+        #   Pass 2 (live, type=1): ``reqMktData(genericTickList="100,101",
+        #       snapshot=False)`` streaming → call/putOpenInterest. Frozen
+        #       mode SUPPRESSES generic ticks (including OI), so we must
+        #       flip to live for this pass; the price tick fields will be
+        #       -1 after-hours but we only care about OI here. Type is
+        #       restored to frozen at the end so subsequent calls behave.
+        # Sequential not parallel: ``reqTickersAsync`` auto-cancels its
+        # underlying mktData subscription, which would tear down our OI
+        # stream if it were already attached to the same contract.
+        snapshot_tickers = await self._ib.reqTickersAsync(*qualified)
         await asyncio.sleep(_TICKER_WAIT_SECONDS)
 
-        quotes = [_ticker_to_quote(t, symbol, spot) for t in tickers if t.contract is not None]
+        # CRITICAL: snapshot Tickers are mutable and IB keeps pushing updates
+        # into them. The moment we flip to live (type=1) for the OI pass,
+        # IB overwrites bid/ask with -1 on the same Ticker objects (no live
+        # quote after-hours). Freeze the snapshot into immutable
+        # ``OptionQuote`` dataclasses BEFORE the mode flip.
+        snapshot_quotes: dict[int, OptionQuote] = {}
+        for t in snapshot_tickers:
+            if t.contract is None:
+                continue
+            con_id = getattr(t.contract, "conId", 0)
+            if not con_id:
+                continue
+            snapshot_quotes[con_id] = _ticker_to_quote(t, symbol, spot)
+
+        oi_by_con: dict[int, int] = {}
+        self._ib.reqMarketDataType(1)
+        try:
+            oi_streams = [
+                self._ib.reqMktData(c, genericTickList="100,101", snapshot=False)
+                for c in qualified
+            ]
+            try:
+                await asyncio.sleep(_OI_STREAM_WAIT_SECONDS)
+                for t in oi_streams:
+                    if t.contract is None:
+                        continue
+                    cc = t.contract
+                    raw = (
+                        t.callOpenInterest if cc.right == "C"
+                        else t.putOpenInterest
+                    )
+                    if raw is None:
+                        continue
+                    try:
+                        val = float(raw)
+                    except (TypeError, ValueError):
+                        continue
+                    if val != val or val < 0:  # NaN or sentinel
+                        continue
+                    oi_by_con[cc.conId] = int(val)
+            finally:
+                for c in qualified:
+                    try:
+                        self._ib.cancelMktData(c)
+                    except Exception:
+                        # Best-effort cancel — losing one slot is preferable
+                        # to crashing the whole fetch.
+                        logger.exception("cancelMktData failed for %s", c)
+        finally:
+            # Always restore frozen so the next fetch (and any concurrent
+            # consumer like position sync) sees the connection's expected
+            # mode. Skipping this once leaks "live mode" into the rest of
+            # the session.
+            self._ib.reqMarketDataType(2)
+
+        # Merge: snapshot_quotes already has bid/ask/Greeks; overlay OI.
+        quotes: list[OptionQuote] = []
+        for con_id, q in snapshot_quotes.items():
+            if q.open_interest is None and con_id in oi_by_con:
+                q = replace(q, open_interest=oi_by_con[con_id])
+            quotes.append(q)
         return ChainFetchResult(quotes=quotes, spot=spot, reason=None)
 
 

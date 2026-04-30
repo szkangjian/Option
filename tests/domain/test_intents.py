@@ -5,9 +5,18 @@ import pytest
 
 from options_tool.domain.intents import (
     ALL_INTENTS,
+    REASON_CROSSES_EARNINGS,
+    REASON_DELTA_TOO_HIGH,
+    REASON_DELTA_TOO_LOW,
+    REASON_DTE_TOO_LONG,
+    REASON_DTE_TOO_SHORT,
+    REASON_NO_QUOTE,
+    REASON_STRIKE_ABOVE_TARGET,
+    REASON_WEEKLY_NOT_ALLOWED,
     SCANNABLE_INTENTS,
     FilterableQuote,
     filter_chain,
+    filter_chain_with_reasons,
     is_scannable,
 )
 from options_tool.settings import IntentPreset
@@ -171,3 +180,130 @@ class TestFilterChain:
             chain, preset=INCOME_PRESET, today=TODAY, earnings_dates=earnings, weekly_ok=True
         )
         assert result == []
+
+
+class TestFilterChainWithReasons:
+    """The reasons-aware variant of filter_chain backs the UI's
+    'why was nothing recommended?' panel.
+    """
+
+    def test_dte_too_short_is_tagged(self):
+        # DTE 10 < INCOME min 30
+        chain = [make_call(100, dte=10)]
+        survivors, rejections = filter_chain_with_reasons(
+            chain, preset=INCOME_PRESET, today=TODAY, weekly_ok=True
+        )
+        assert survivors == []
+        assert len(rejections) == 1
+        assert rejections[0].reason_code == REASON_DTE_TOO_SHORT
+        assert "10" in rejections[0].reason_detail
+
+    def test_dte_too_long_is_tagged(self):
+        chain = [make_call(100, dte=90)]
+        _, rejections = filter_chain_with_reasons(
+            chain, preset=INCOME_PRESET, today=TODAY, weekly_ok=True
+        )
+        assert rejections[0].reason_code == REASON_DTE_TOO_LONG
+
+    def test_weekly_blocked_when_disabled(self):
+        # 2026-05-22 is a Friday but NOT monthly (3rd Friday is 5/15).
+        # DTE 33 fits INCOME's 30-45 window so we're testing the weekly
+        # check, not DTE.
+        non_monthly = date(2026, 5, 22)
+        chain = [
+            FilterableQuote(
+                symbol="TEST",
+                expiry=non_monthly,
+                strike=100,
+                right="C",
+                bid=1.0,
+                ask=1.1,
+                delta=0.15,
+            )
+        ]
+        _, rejections = filter_chain_with_reasons(
+            chain, preset=INCOME_PRESET, today=TODAY, weekly_ok=False
+        )
+        assert rejections[0].reason_code == REASON_WEEKLY_NOT_ALLOWED
+
+    def test_no_quote_is_tagged(self):
+        chain = [make_call(100, bid=0.0, ask=0.0)]
+        _, rejections = filter_chain_with_reasons(
+            chain, preset=INCOME_PRESET, today=TODAY, weekly_ok=True
+        )
+        assert rejections[0].reason_code == REASON_NO_QUOTE
+
+    def test_delta_too_high_is_tagged(self):
+        chain = [make_call(100, delta=0.40)]  # > INCOME max 0.20
+        _, rejections = filter_chain_with_reasons(
+            chain, preset=INCOME_PRESET, today=TODAY, weekly_ok=True
+        )
+        assert rejections[0].reason_code == REASON_DELTA_TOO_HIGH
+        assert "0.40" in rejections[0].reason_detail
+
+    def test_delta_too_low_is_tagged(self):
+        # TRADE preset: DTE 7-21, Δ 0.25-0.35. Pick DTE 14 + Δ 0.10
+        # so only the Δ check fires.
+        chain = [make_call(100, dte=14, delta=0.10)]
+        _, rejections = filter_chain_with_reasons(
+            chain, preset=TRADE_PRESET, today=TODAY, weekly_ok=True
+        )
+        assert rejections[0].reason_code == REASON_DELTA_TOO_LOW
+
+    def test_strike_above_target_is_tagged(self):
+        chain = [make_put(50)]  # target=45, cap=45 → strike 50 rejected
+        _, rejections = filter_chain_with_reasons(
+            chain, preset=WTO_PRESET, today=TODAY,
+            target_buy_price=45.0, weekly_ok=True,
+        )
+        assert rejections[0].reason_code == REASON_STRIKE_ABOVE_TARGET
+        assert "$50" in rejections[0].reason_detail
+
+    def test_earnings_crossing_is_tagged(self):
+        earnings = [TODAY + timedelta(days=20)]
+        chain = [make_call(100, dte=35)]
+        _, rejections = filter_chain_with_reasons(
+            chain, preset=INCOME_PRESET, today=TODAY,
+            earnings_dates=earnings, weekly_ok=True,
+        )
+        assert rejections[0].reason_code == REASON_CROSSES_EARNINGS
+        assert earnings[0].isoformat() in rejections[0].reason_detail
+
+    def test_each_quote_gets_one_reason_first_binding(self):
+        # DTE too short AND delta too high — should report DTE first per
+        # documented order.
+        chain = [make_call(100, dte=10, delta=0.99)]
+        _, rejections = filter_chain_with_reasons(
+            chain, preset=INCOME_PRESET, today=TODAY, weekly_ok=True
+        )
+        assert len(rejections) == 1
+        assert rejections[0].reason_code == REASON_DTE_TOO_SHORT
+
+    def test_survivors_unchanged_vs_legacy(self):
+        # Same input → same survivor set as the legacy filter_chain wrapper.
+        chain = [
+            make_call(100, dte=35, delta=0.15),  # survives
+            make_call(100, dte=10, delta=0.15),  # rejected (DTE)
+            make_call(100, dte=35, delta=0.50),  # rejected (Δ)
+        ]
+        legacy = filter_chain(
+            chain, preset=INCOME_PRESET, today=TODAY, weekly_ok=True
+        )
+        survivors, _ = filter_chain_with_reasons(
+            chain, preset=INCOME_PRESET, today=TODAY, weekly_ok=True
+        )
+        assert legacy == survivors
+        assert len(survivors) == 1
+
+    def test_rejection_carries_quote_metadata(self):
+        chain = [make_put(50, dte=35, delta=-0.25)]
+        _, rejections = filter_chain_with_reasons(
+            chain, preset=WTO_PRESET, today=TODAY,
+            target_buy_price=45.0, weekly_ok=True,
+        )
+        r = rejections[0]
+        assert r.right == "P"
+        assert r.strike == 50
+        assert r.dte == 35
+        assert r.delta == -0.25
+        assert r.mid is not None and r.mid > 0

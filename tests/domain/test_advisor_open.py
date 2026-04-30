@@ -1,6 +1,8 @@
 """Opening Advisor ranking tests."""
 from datetime import date, timedelta
 
+from pytest import approx as pytest_approx
+
 from options_tool.domain.advisor_open import rank_chain
 from options_tool.domain.intents import FilterableQuote
 from options_tool.settings import IntentPreset
@@ -94,3 +96,77 @@ class TestRankChain:
             today=TODAY, underlying_price=100.0, weekly_ok=True,
         )
         assert result[0].dte == 42
+
+    def test_bid_ask_last_propagate_to_candidate(self):
+        # FilterableQuote bid/ask/last must reach the Candidate so the UI
+        # can render the breakdown tooltip + spread% warning.
+        chain = [
+            FilterableQuote(
+                symbol="TEST",
+                expiry=TODAY + timedelta(days=35),
+                strike=105,
+                right="C",
+                bid=1.20,
+                ask=1.40,
+                delta=0.15,
+                last=1.35,
+            )
+        ]
+        result = rank_chain(
+            chain, symbol="TEST", intent="INCOME", preset=INCOME,
+            today=TODAY, underlying_price=100.0, weekly_ok=True,
+        )
+        c = result[0]
+        assert c.bid == 1.20
+        assert c.ask == 1.40
+        assert c.last == 1.35
+        assert c.premium == pytest_approx(1.30)  # mid
+
+
+class TestCandidateSpread:
+    """Spread/spread_pct/quote_source properties drive the Web UI badges."""
+
+    def _candidate(self, *, bid: float | None, ask: float | None,
+                   last: float | None = None, premium: float | None = None):
+        # Build a Candidate via rank_chain so we exercise the real path.
+        if premium is None:
+            if bid is not None and ask is not None and bid > 0 and ask > 0:
+                premium = (bid + ask) / 2.0
+            else:
+                premium = last or 0.0
+        chain = [
+            FilterableQuote(
+                symbol="T", expiry=TODAY + timedelta(days=35),
+                strike=100, right="C",
+                bid=bid, ask=ask, delta=0.15, last=last,
+            )
+        ]
+        result = rank_chain(
+            chain, symbol="T", intent="INCOME", preset=INCOME,
+            today=TODAY, underlying_price=100.0, weekly_ok=True,
+        )
+        return result[0]
+
+    def test_spread_basic(self):
+        c = self._candidate(bid=1.00, ask=1.20)
+        assert c.spread == pytest_approx(0.20)
+        assert c.spread_pct == pytest_approx(0.20 / 1.10)
+        assert c.quote_source == "mid"
+
+    def test_spread_none_when_bid_missing(self):
+        c = self._candidate(bid=None, ask=1.10, last=1.05)
+        assert c.spread is None
+        assert c.spread_pct is None
+        assert c.quote_source == "last"
+
+    def test_spread_none_when_zero_bid(self):
+        # IB returns 0 bid after-hours / illiquid → falls back to last.
+        c = self._candidate(bid=0.0, ask=1.10, last=1.00)
+        assert c.spread is None
+        assert c.spread_pct is None
+        assert c.quote_source == "last"
+
+    def test_wide_spread_threshold_30pct(self):
+        # bid 0.50 / ask 1.00 → mid 0.75, spread 0.50 = 67% of mid
+        c = self._candidate(bid=0.50, ask=1.00)
+        assert c.spread_pct is not None and c.spread_pct > 0.30

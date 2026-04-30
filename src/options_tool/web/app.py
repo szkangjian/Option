@@ -924,6 +924,8 @@ async def symbol_advise(request: Request, symbol: str) -> HTMLResponse:
             "candidates": result.candidates,
             "advise_reason": result.reason,
             "advise_source": result.source,
+            "advise_rejection_groups": result.rejection_groups,
+            "advise_quotes_total": result.quotes_total,
             "loading": False,
         },
     )

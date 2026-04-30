@@ -434,8 +434,62 @@
     {% endif %}
     {% if not candidates and advise_reason %}
     <div class="rounded-md border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-900 mb-2">
-      <span class="font-medium">没有候选 ·</span>
-      <span class="text-amber-800">{{ advise_reason }}</span>
+      <div>
+        <span class="font-medium">没有候选 ·</span>
+        <span class="text-amber-800">{{ advise_reason }}</span>
+      </div>
+
+      {% if advise_rejection_groups %}
+      <ul class="mt-2 space-y-1" x-data="{ open: null }">
+        {% for g in advise_rejection_groups %}
+        <li>
+          <button type="button"
+                  @click="open = (open === '{{ g.code }}' ? null : '{{ g.code }}')"
+                  class="w-full text-left flex items-center gap-2 px-2 py-1 rounded hover:bg-amber-100 focus:outline-none focus:bg-amber-100">
+            <span x-text="open === '{{ g.code }}' ? '▾' : '▸'"
+                  class="inline-block w-3 text-amber-600 tabular-nums"></span>
+            <span class="font-medium text-amber-900">{{ g.label }}</span>
+            <span class="text-amber-700">·</span>
+            <span class="text-amber-700 tabular-nums">{{ g.count }} 条</span>
+          </button>
+
+          <div x-show="open === '{{ g.code }}'" x-cloak class="mt-1 ml-5 overflow-x-auto">
+            <table class="text-xs border-collapse">
+              <thead class="text-amber-700">
+                <tr>
+                  <th class="text-left pr-3 py-0.5 font-medium">合约</th>
+                  <th class="text-right pr-3 py-0.5 font-medium">DTE</th>
+                  <th class="text-right pr-3 py-0.5 font-medium">Δ</th>
+                  <th class="text-right pr-3 py-0.5 font-medium">Mid</th>
+                  <th class="text-left py-0.5 font-medium">原因详情</th>
+                </tr>
+              </thead>
+              <tbody class="text-amber-900">
+                {% for r in g.items %}
+                <tr class="border-t border-amber-200/60">
+                  <td class="pr-3 py-0.5 font-mono">{{ r.right }}{{ "%g"|format(r.strike) }} · {{ r.expiry.isoformat() }}</td>
+                  <td class="text-right pr-3 py-0.5 tabular-nums">{{ r.dte }}</td>
+                  <td class="text-right pr-3 py-0.5 tabular-nums">
+                    {% if r.delta is not none %}{{ "%.2f"|format(r.delta) }}{% else %}—{% endif %}
+                  </td>
+                  <td class="text-right pr-3 py-0.5 tabular-nums">
+                    {% if r.mid is not none %}${{ "%.2f"|format(r.mid) }}{% else %}—{% endif %}
+                  </td>
+                  <td class="py-0.5 text-amber-800">{{ r.reason_detail }}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </li>
+        {% endfor %}
+      </ul>
+      <p class="text-xs text-amber-700 mt-2">
+        想放宽，编辑
+        <code class="bg-amber-100 px-1 rounded">config/intents.yaml</code>
+        对应 intent 的 preset；或在 symbol 详情页修改 per-symbol overrides。
+      </p>
+      {% endif %}
     </div>
     {% endif %}
     {% if candidates %}
@@ -455,7 +509,13 @@
       </thead>
       <tbody>
         {% for c in candidates %}
-        <tr class="border-t border-slate-100 {% if loop.index == 1 %}bg-emerald-50/50{% endif %}">
+        {# Spread% > 30% = liquidity warning. Tints row amber (overrides
+           the "first row" emerald tint) so the warning stays visible. #}
+        {% set is_wide = c.spread_pct is not none and c.spread_pct > 0.30 %}
+        <tr class="border-t border-slate-100
+            {% if is_wide %}bg-amber-50
+            {% elif loop.index == 1 %}bg-emerald-50/50
+            {% endif %}">
           <td class="text-right px-3 py-1.5 font-medium">{{ loop.index }}</td>
           <td class="px-3 py-1.5">
             <span class="px-1 rounded text-[10px] font-medium
@@ -475,7 +535,37 @@
             {% endif %}
           </td>
           <td class="text-right px-3 py-1.5">{{ c.dte }}</td>
-          <td class="text-right px-3 py-1.5 tabular-nums font-medium">${{ "%.2f"|format(c.premium) }}</td>
+          {# Premium cell:
+             - Top line: $mid (or $last) + warning badge
+             - Bottom line: bid/ask inline in smaller font (or "last only")
+             Tooltip still carries the full breakdown for power users. #}
+          <td class="text-right px-3 py-1.5 tabular-nums whitespace-nowrap"
+              title="{% if c.quote_source == 'mid' -%}
+                bid ${{ '%.2f'|format(c.bid) }} / ask ${{ '%.2f'|format(c.ask) }} → mid ${{ '%.2f'|format(c.premium) }}
+                {%- if c.spread_pct is not none %} · spread ${{ '%.2f'|format(c.spread) }} ({{ '%.0f'|format(c.spread_pct * 100) }}%){% endif %}
+              {%- else -%}
+                last ${{ '%.2f'|format(c.premium) }} · 无 live bid/ask（盘后或流动性稀薄）
+              {%- endif %}">
+            <div class="font-medium">
+              ${{ "%.2f"|format(c.premium) }}
+              {% if is_wide %}
+              <span class="ml-1 px-1 rounded text-[9px] font-semibold bg-amber-200 text-amber-900">
+                ⚠ {{ "%.0f"|format(c.spread_pct * 100) }}%
+              </span>
+              {% elif c.quote_source == 'last' %}
+              <span class="ml-1 px-1 rounded text-[9px] font-medium bg-slate-100 text-slate-500">
+                L
+              </span>
+              {% endif %}
+            </div>
+            {% if c.quote_source == 'mid' %}
+            <div class="text-[10px] text-slate-400 font-normal">
+              {{ "%.2f"|format(c.bid) }} / {{ "%.2f"|format(c.ask) }}
+            </div>
+            {% else %}
+            <div class="text-[10px] text-slate-400 font-normal italic">last only</div>
+            {% endif %}
+          </td>
           <td class="text-right px-3 py-1.5 tabular-nums">
             {% if c.delta is not none %}{{ "%.2f"|format(c.delta) }}{% else %}—{% endif %}
           </td>
