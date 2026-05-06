@@ -8,7 +8,7 @@
 INCOME:                          # Hold + collect rent (CC)
   side: CALL
   delta_max: 0.20
-  # 25-55 always captures exactly the next 3rd-Friday monthly, regardless of
+  # 25-55 always captures exactly the next standard monthly expiry, regardless of
   # where in the cycle "today" falls. weekly_ok=true on a symbol layers in
   # weeklies on top.
   dte_min: 25

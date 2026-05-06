@@ -31,7 +31,7 @@ erDiagram
         string intent "CORE_HOLD / INCOME / TRADE / WANT_TO_OWN / WATCH"
         bool wheel_enabled
         bool hidden "从扫描隐藏（保留 cost basis）"
-        bool weekly_ok "false=只允许标准月度（第三个周五）"
+        bool weekly_ok "false=只允许标准月度到期"
         float target_buy_price
         string notes
     }
@@ -148,7 +148,7 @@ flowchart LR
 | `intent`            | TEXT NOT NULL CHECK | 五选一：CORE_HOLD/INCOME/TRADE/WANT_TO_OWN/WATCH    |
 | `wheel_enabled`     | BOOLEAN            | wheel 标记（自动翻转逻辑 P2 待实现）                 |
 | `hidden`            | BOOLEAN            | 从所有扫描隐藏；cost basis 仍计算                    |
-| `weekly_ok`         | BOOLEAN            | false 时 advisor 只接受标准月度（第三个周五）        |
+| `weekly_ok`         | BOOLEAN            | false 时 advisor 只接受标准月度到期                  |
 | `target_buy_price`  | REAL               | `WANT_TO_OWN` 必填                                  |
 | `notes`             | TEXT               | 自由备注                                            |
 | `updated_at`        | TIMESTAMP          | 自动                                                |

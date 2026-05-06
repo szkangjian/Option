@@ -71,6 +71,23 @@ class Settings(BaseSettings):
     chain_prefetch_interval_minutes: int = 5
     alert_scan_interval_minutes: int = 10
 
+    # JSON API calls are often user-facing or agent-facing and should not wait
+    # behind scheduler prefetch work that holds the same IB clientId lock.
+    # The API layer derives client IDs as ``config client_id + offset``.
+    api_client_id_offset: int = 1000
+    api_spot_timeout_seconds: float = 5.0
+    api_option_chain_timeout_seconds: float = 20.0
+    api_portfolio_refresh_timeout_seconds: float = 30.0
+    api_spot_cache_max_age_seconds: float = 60.0
+    api_option_chain_cache_max_age_seconds: float = 300.0
+    api_portfolio_cache_max_age_seconds: float = 300.0
+
+    # Recommendations are decision-support outputs, not archival hints. The
+    # dashboard and opportunity alert path only surface rank-1 rows inside this
+    # freshness window; when stale, they refresh from IBKR or show nothing.
+    recommendation_max_age_seconds: float = 300.0
+    recommendation_refresh_timeout_seconds: float = 25.0
+
     @property
     def db_url(self) -> str:
         return f"sqlite:///{self.db_path}"
@@ -241,6 +258,25 @@ def load_accounts(path: Path | None = None) -> AccountsConfig:
         return AccountsConfig()
     with p.open() as f:
         return AccountsConfig.model_validate(yaml.safe_load(f) or {})
+
+
+def load_api_accounts(path: Path | None = None) -> AccountsConfig:
+    """Load account config with clientIds reserved for the JSON API layer.
+
+    Scheduler / web advisor prefetch uses the configured client IDs. External
+    JSON API callers get a deterministic offset so live requests do not queue
+    behind long-running prefetches on the same ``(host, port, client_id)`` lock.
+    """
+    cfg = load_accounts(path)
+    offset = get_settings().api_client_id_offset
+    if offset == 0:
+        return cfg
+    return AccountsConfig(
+        accounts=[
+            acct.model_copy(update={"client_id": acct.client_id + offset})
+            for acct in cfg.accounts
+        ]
+    )
 
 
 def load_intents(path: Path | None = None) -> dict[str, IntentPreset]:

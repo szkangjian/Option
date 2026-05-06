@@ -9,6 +9,7 @@ historical fills via reqExecutions). For P0 we only sync open positions.
 """
 from __future__ import annotations
 
+from collections.abc import Iterable
 import logging
 from datetime import date, datetime, timedelta, timezone
 
@@ -43,6 +44,7 @@ from options_tool.ibkr import (
     StockCloseRow,
     StockHolding,
 )
+from options_tool.settings import AccountConfig
 
 logger = logging.getLogger(__name__)
 
@@ -58,14 +60,20 @@ def _ensure_account(session, ib_account_code: str, alias: str | None) -> Account
     return acct
 
 
-async def sync_positions() -> tuple[int, int]:
+async def sync_positions(
+    configs: Iterable[AccountConfig] | None = None,
+    *,
+    refresh_earnings: bool = True,
+) -> tuple[int, int]:
     """Pull positions + open orders from IBKR, then earnings from Finnhub.
 
-    Earnings is best-effort: missing API key or HTTP failure logs and
-    continues. Returns ``(stock_rows, option_rows)`` totals — earnings count
-    is logged separately.
+    Earnings is best-effort and enabled by default for CLI/manual sync:
+    missing API key or HTTP failure logs and continues. JSON portfolio refresh
+    can pass ``refresh_earnings=False`` for a lightweight IB-only snapshot.
+    Returns ``(stock_rows, option_rows)`` totals — earnings count is logged
+    separately.
     """
-    async with MultiAccountClient() as multi:
+    async with MultiAccountClient(configs) as multi:
         stocks, options = await multi.fetch_all_positions()
         orders = await multi.fetch_all_open_orders()
 
@@ -74,8 +82,9 @@ async def sync_positions() -> tuple[int, int]:
     stock_n, option_n = _persist_positions(stocks, options, alias_by_code)
     order_n = _persist_open_orders(orders, alias_by_code)
 
-    # Earnings — pull for every tracked symbol in one batch.
-    earnings_n = await sync_earnings()
+    # Earnings — pull for every tracked symbol in one batch. API portfolio
+    # refresh can skip this so it doesn't depend on external HTTP.
+    earnings_n = await sync_earnings() if refresh_earnings else 0
 
     logger.info(
         "Synced %d stocks, %d options, %d open orders, %d earnings rows",

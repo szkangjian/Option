@@ -20,7 +20,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select
 
 from options_tool.advisor import (
-    fetch_and_cache_chain,
+    advise_symbol,
     fetch_and_cache_position_chain,
     upsert_spot,
 )
@@ -45,7 +45,7 @@ from options_tool.domain.alert_detection import (
     detect_profit_take,
     detect_stop_loss,
 )
-from options_tool.domain.intents import SCANNABLE_INTENTS
+from options_tool.domain.intents import SCANNABLE_INTENTS, is_monthly_expiry
 from options_tool.domain.roll_simulator import (
     RollQuote,
     format_roll_suggestion,
@@ -133,18 +133,35 @@ async def prefetch_chains() -> None:
         return
 
     if scannable:
-        logger.info("prefetch_chains: refreshing %d scannable symbols", len(scannable))
+        logger.info(
+            "prefetch_chains: refreshing advisor recommendations for %d scannable symbols",
+            len(scannable),
+        )
+        settings = get_settings()
         ok = 0
         for sym in scannable:
             try:
-                quotes, _spot, _reason, _source = await fetch_and_cache_chain(sym)
-                if quotes:
+                result = await asyncio.wait_for(
+                    advise_symbol(sym),
+                    timeout=settings.recommendation_refresh_timeout_seconds,
+                )
+                if result.quotes_total > 0 or result.spot is not None:
                     ok += 1
+                if not result.candidates:
+                    logger.info(
+                        "prefetch_chains: %s advisor produced no candidates: %s",
+                        sym, result.reason or "all candidates filtered",
+                    )
             except asyncio.CancelledError:
                 raise
+            except asyncio.TimeoutError:
+                logger.warning("prefetch_chains: advisor refresh timed out for %s", sym)
             except Exception:
-                logger.exception("prefetch_chains: %s failed", sym)
-        logger.info("prefetch_chains: %d/%d chains refreshed", ok, len(scannable))
+                logger.exception("prefetch_chains: advisor refresh failed for %s", sym)
+        logger.info(
+            "prefetch_chains: %d/%d advisor refreshes completed",
+            ok, len(scannable),
+        )
 
     if position_groups:
         logger.info(
@@ -316,7 +333,9 @@ def _recent_top_recommendations(within_minutes: int) -> list[OpportunitySnapshot
 
     The latest prefetch always re-inserts; we just want what surfaced this
     cycle, not the whole historical log. Top rank only — we don't want the
-    bot blasting all five candidates at once.
+    bot blasting all five candidates at once. If a symbol's intent changed
+    after a recommendation was generated, skip the old record instead of
+    alerting on a strategy the user no longer wants.
     """
     from datetime import datetime, timezone
 
@@ -327,9 +346,25 @@ def _recent_top_recommendations(within_minutes: int) -> list[OpportunitySnapshot
             .where(Recommendation.generated_at >= cutoff)
             .where(Recommendation.rank == 1)
         ).all()
+        symbol_policy = {
+            symbol: (intent, bool(weekly_ok))
+            for symbol, intent, weekly_ok in session.execute(
+                select(Symbol.symbol, Symbol.intent, Symbol.weekly_ok)
+                .where(Symbol.hidden == False)  # noqa: E712
+                .where(Symbol.intent.in_(list(SCANNABLE_INTENTS)))
+            )
+        }
         # Dedupe per symbol — keep the latest.
         latest: dict[str, Recommendation] = {}
         for r in rows:
+            current = symbol_policy.get(r.symbol)
+            if current is None:
+                continue
+            intent, weekly_ok = current
+            if intent != r.intent:
+                continue
+            if not weekly_ok and not is_monthly_expiry(r.expiry):
+                continue
             cur = latest.get(r.symbol)
             if cur is None or r.generated_at > cur.generated_at:
                 latest[r.symbol] = r
@@ -346,6 +381,33 @@ def _recent_top_recommendations(within_minutes: int) -> list[OpportunitySnapshot
             )
             for r in latest.values()
         ]
+
+
+async def _refresh_scannable_recommendations() -> dict[str, str]:
+    """Refresh opportunity recommendations before alert detection.
+
+    Opportunity alerts must be based on current IBKR data. If a symbol cannot be
+    refreshed inside the timeout, it is skipped by the freshness cutoff rather
+    than replaced with an old rank-1 recommendation.
+    """
+    settings = get_settings()
+    errors: dict[str, str] = {}
+    for sym in _scannable_symbols():
+        try:
+            await asyncio.wait_for(
+                advise_symbol(sym),
+                timeout=settings.recommendation_refresh_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            errors[sym] = (
+                f"advisor refresh timed out after "
+                f"{settings.recommendation_refresh_timeout_seconds:g}s"
+            )
+            logger.warning("scan_alerts: advisor refresh timed out for %s", sym)
+        except Exception as exc:
+            errors[sym] = f"{type(exc).__name__}: {exc}"
+            logger.exception("scan_alerts: advisor refresh failed for %s", sym)
+    return errors
 
 
 async def daily_iv_update() -> None:
@@ -404,9 +466,13 @@ async def scan_alerts() -> None:
                 candidates.append(hit)
 
     settings = get_settings()
-    # "Recent" means roughly the last two prefetch cycles — gives the alert
-    # scan some slack but not so much that we replay yesterday's surfaces.
-    window = max(settings.chain_prefetch_interval_minutes * 2, 5)
+    refresh_errors = await _refresh_scannable_recommendations()
+    if refresh_errors:
+        logger.warning(
+            "scan_alerts: %d symbols had no fresh opportunity refresh",
+            len(refresh_errors),
+        )
+    window = max(settings.recommendation_max_age_seconds / 60.0, 1.0)
     for opp in _recent_top_recommendations(within_minutes=window):
         hit = detect_opportunity(opp, cfg)
         if hit is not None:

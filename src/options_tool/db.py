@@ -92,7 +92,7 @@ class Symbol(Base):
     target_buy_price: Mapped[float | None] = mapped_column(Float)
     notes: Mapped[str | None] = mapped_column(Text)
     hidden: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
-    # Whether to consider non-monthly (weekly / non-3rd-Friday) expiries when
+    # Whether to consider non-monthly (weekly / non-standard monthly) expiries when
     # running the advisor. Liquidity-driven setting — high-volume names like
     # SPY / NVDA can use weeklies; thin tickers like URA stick to monthlies.
     weekly_ok: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")

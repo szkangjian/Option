@@ -5,7 +5,31 @@
     2. Top opportunities — latest rank-1 recommendations across all scannable symbols
 #}
 {% from "macros/info_tip.html" import info_tip %}
-<div class="space-y-6">
+<div id="dashboard-root" class="space-y-6"
+     {% if dashboard.refreshing %}
+     hx-get="/dashboard"
+     hx-trigger="load delay:10s"
+     hx-target="#dashboard-root"
+     hx-swap="outerHTML"
+     {% endif %}>
+  {% if dashboard.refreshing %}
+  <div class="text-xs rounded-md border border-sky-200 bg-sky-50 text-sky-800 px-3 py-2">
+    正在刷新过期 rank-1；刷新完成前不展示旧建议：
+    {% for symbol in dashboard.refreshing %}
+      <span class="font-mono font-semibold">{{ symbol }}</span>{% if not loop.last %}, {% endif %}
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if dashboard.refresh_errors %}
+  <div class="text-xs rounded-md border border-amber-200 bg-amber-50 text-amber-800 px-3 py-2">
+    部分 opportunity 刷新失败，已隐藏过期 rank-1；这些标的暂不用于决策：
+    {% for symbol, error in dashboard.refresh_errors.items() %}
+      <span class="font-mono font-semibold">{{ symbol }}</span>{% if not loop.last %}, {% endif %}
+    {% endfor %}
+  </div>
+  {% endif %}
+
   <div>
     <h2 class="text-sm font-semibold text-slate-700 mb-2 flex items-center gap-2">
       <span>需要关注的持仓</span>
@@ -93,7 +117,7 @@
     <h2 class="text-sm font-semibold text-slate-700 mb-2 flex items-center gap-2">
       <span>Top opportunities</span>
       <span class="text-xs font-normal text-slate-400">
-        全部 sell-to-open（CC / CSP）· 最近 24h · rank-1 · 推送阈值 {{ (dashboard.roc_threshold * 100)|round(0, 'floor')|int }}% 年化
+        当前 intent 匹配 · {{ (dashboard.recommendation_max_age_seconds / 60)|round(0, 'ceil')|int }}m 内刷新 · rank-1 · 推送阈值 {{ (dashboard.roc_threshold * 100)|round(0, 'floor')|int }}% 年化
       </span>
     </h2>
     {% if dashboard.opportunities %}

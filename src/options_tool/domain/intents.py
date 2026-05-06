@@ -15,13 +15,92 @@ This module:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 
 from options_tool.settings import IntentPreset
 
+
+def _nth_weekday(year: int, month: int, weekday: int, n: int) -> date:
+    """Return the nth weekday in a month. Monday=0, Friday=4."""
+    first = date(year, month, 1)
+    days_until = (weekday - first.weekday()) % 7
+    return first + timedelta(days=days_until + 7 * (n - 1))
+
+
+def _last_weekday(year: int, month: int, weekday: int) -> date:
+    """Return the last weekday in a month. Monday=0, Friday=4."""
+    if month == 12:
+        cursor = date(year + 1, 1, 1) - timedelta(days=1)
+    else:
+        cursor = date(year, month + 1, 1) - timedelta(days=1)
+    while cursor.weekday() != weekday:
+        cursor -= timedelta(days=1)
+    return cursor
+
+
+def _observed_fixed_holiday(year: int, month: int, day: int) -> date:
+    actual = date(year, month, day)
+    if actual.weekday() == 5:  # Saturday
+        return actual - timedelta(days=1)
+    if actual.weekday() == 6:  # Sunday
+        return actual + timedelta(days=1)
+    return actual
+
+
+def _easter_sunday(year: int) -> date:
+    """Gregorian Easter Sunday via the Meeus/Jones/Butcher algorithm."""
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month = (h + l - 7 * m + 114) // 31
+    day = ((h + l - 7 * m + 114) % 31) + 1
+    return date(year, month, day)
+
+
+def _is_us_market_holiday(d: date) -> bool:
+    """NYSE-style full-day holiday calendar for expiry-date adjustment."""
+    holidays = {
+        _nth_weekday(d.year, 1, 0, 3),   # Martin Luther King Jr. Day
+        _nth_weekday(d.year, 2, 0, 3),   # Washington's Birthday
+        _easter_sunday(d.year) - timedelta(days=2),  # Good Friday
+        _last_weekday(d.year, 5, 0),     # Memorial Day
+        _nth_weekday(d.year, 9, 0, 1),   # Labor Day
+        _nth_weekday(d.year, 11, 3, 4),  # Thanksgiving Day
+    }
+    for year in (d.year - 1, d.year, d.year + 1):
+        holidays.add(_observed_fixed_holiday(year, 1, 1))    # New Year's Day
+        if year >= 2022:
+            holidays.add(_observed_fixed_holiday(year, 6, 19))  # Juneteenth
+        holidays.add(_observed_fixed_holiday(year, 7, 4))    # Independence Day
+        holidays.add(_observed_fixed_holiday(year, 12, 25))  # Christmas Day
+    return d in holidays
+
+
+def standard_monthly_expiry_date(year: int, month: int) -> date:
+    """Standard US equity monthly option last-trading expiry date.
+
+    Equity monthlies are anchored to the third Friday. If that Friday is a
+    full market holiday (for example Good Friday or Juneteenth), the listed
+    last trading date moves back to the previous business day.
+    """
+    expiry = _nth_weekday(year, month, 4, 3)
+    while expiry.weekday() >= 5 or _is_us_market_holiday(expiry):
+        expiry -= timedelta(days=1)
+    return expiry
+
+
 def is_monthly_expiry(d: date) -> bool:
-    """True if ``d`` is a standard US monthly options expiry (3rd Friday)."""
-    return d.weekday() == 4 and 15 <= d.day <= 21
+    """True if ``d`` is a standard US equity monthly option expiry date."""
+    return d == standard_monthly_expiry_date(d.year, d.month)
 
 
 # Tags that produce recommendations.
@@ -176,7 +255,7 @@ def filter_chain_with_reasons(
         if not weekly_ok and not is_monthly_expiry(q.expiry):
             _reject(
                 q, REASON_WEEKLY_NOT_ALLOWED,
-                f"{q.expiry.isoformat()} 不是月度第 3 周五",
+                f"{q.expiry.isoformat()} 不是标准月度到期日",
             )
             continue
 

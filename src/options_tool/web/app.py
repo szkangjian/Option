@@ -53,7 +53,7 @@ from options_tool.domain.advisor_position import advise_position
 from options_tool.domain.alert_detection import ShortPositionSnapshot
 from options_tool.domain.cost_basis import TxLeg, adjusted_cost_per_share
 from options_tool.domain.expiry_scenarios import scenario_for_short
-from options_tool.domain.intents import is_scannable
+from options_tool.domain.intents import is_monthly_expiry, is_scannable
 from options_tool.domain.iv_stats import IVPoint, compute_stats
 from options_tool.domain.roll_simulator import RollQuote, simulate_rolls
 from options_tool.ibkr import MultiAccountClient
@@ -72,6 +72,9 @@ logger = logging.getLogger(__name__)
 
 WEB_DIR = Path(__file__).parent
 templates = Jinja2Templates(directory=WEB_DIR / "templates")
+_recommendation_refresh_markers: dict[tuple[str, str], datetime] = {}
+_recommendation_refresh_inflight: set[str] = set()
+_recommendation_refresh_errors: dict[str, tuple[datetime, str]] = {}
 
 
 @asynccontextmanager
@@ -95,6 +98,12 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="options-tool", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=WEB_DIR / "static"), name="static")
+
+# Read-only JSON API for external integrations (Dexter agent, scripts, etc.).
+# Mounted under /api. Bound to the same 127.0.0.1 host as the HTML panel —
+# do not expose this on a public interface; there is no auth.
+from options_tool.web.api import api_router  # noqa: E402
+app.include_router(api_router)
 
 
 # ---- Helpers ---------------------------------------------------------------
@@ -362,19 +371,157 @@ def _opportunity_view(r: Recommendation, roc_threshold: float, ivs=None) -> dict
     }
 
 
-def _build_dashboard() -> dict:
+def _recommendation_matches_symbol_policy(
+    r: Recommendation,
+    symbol_policy: dict[str, tuple[str, bool]],
+) -> bool:
+    current = symbol_policy.get(r.symbol)
+    if current is None:
+        return False
+    intent, weekly_ok = current
+    if intent != r.intent:
+        return False
+    return weekly_ok or is_monthly_expiry(r.expiry)
+
+
+def _recommendation_cutoff() -> datetime:
+    return datetime.now(timezone.utc) - timedelta(
+        seconds=get_settings().recommendation_max_age_seconds
+    )
+
+
+async def _refresh_recommendations_for_symbols(symbols: list[str]) -> dict:
+    """Refresh advisor recommendations for ``symbols`` with a hard timeout.
+
+    A failure means "do not use stale recommendations" rather than "fall back
+    to yesterday's rank-1". The caller can surface ``errors`` as a warning.
+    """
+    settings = get_settings()
+    refreshed: list[str] = []
+    errors: dict[str, str] = {}
+    for symbol in symbols:
+        try:
+            result = await asyncio.wait_for(
+                advise_symbol(symbol),
+                timeout=settings.recommendation_refresh_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            errors[symbol] = (
+                f"advisor refresh timed out after "
+                f"{settings.recommendation_refresh_timeout_seconds:g}s"
+            )
+            logger.warning("advisor refresh timed out for %s", symbol)
+            continue
+        except Exception as exc:
+            errors[symbol] = f"{type(exc).__name__}: {exc}"
+            logger.exception("advisor refresh failed for %s", symbol)
+            continue
+        refreshed.append(symbol)
+        sym = _load_symbol_for_refresh_marker(symbol)
+        if sym is not None:
+            _recommendation_refresh_markers[(symbol, sym)] = datetime.now(timezone.utc)
+        if not result.candidates:
+            logger.info(
+                "advisor refresh produced no candidates for %s: %s",
+                symbol, result.reason or "all candidates filtered",
+            )
+    return {"refreshed": refreshed, "errors": errors}
+
+
+async def _refresh_recommendations_background(symbols: list[str]) -> None:
+    try:
+        status = await _refresh_recommendations_for_symbols(symbols)
+        now = datetime.now(timezone.utc)
+        for symbol, error in status.get("errors", {}).items():
+            _recommendation_refresh_errors[symbol] = (now, error)
+    finally:
+        for symbol in symbols:
+            _recommendation_refresh_inflight.discard(symbol)
+
+
+def _load_symbol_for_refresh_marker(symbol: str) -> str | None:
+    with session_scope() as session:
+        intent = session.scalar(
+            select(Symbol.intent).where(Symbol.symbol == symbol)
+        )
+    return intent if intent and is_scannable(intent) else None
+
+
+async def _refresh_stale_dashboard_recommendations() -> dict:
+    """Ensure dashboard opportunities are based on fresh current-intent scans."""
+    cutoff = _recommendation_cutoff()
+    now = datetime.now(timezone.utc)
+    max_age = get_settings().recommendation_max_age_seconds
+
+    with session_scope() as session:
+        symbol_policy = {
+            symbol: (intent, bool(weekly_ok))
+            for symbol, intent, weekly_ok in session.execute(
+                select(Symbol.symbol, Symbol.intent, Symbol.weekly_ok)
+                .where(Symbol.hidden == False)  # noqa: E712
+            )
+            if is_scannable(intent)
+        }
+        rec_rows = session.scalars(
+            select(Recommendation)
+            .where(Recommendation.generated_at >= cutoff)
+            .where(Recommendation.rank == 1)
+        ).all()
+
+    fresh_symbols: set[str] = set()
+    for r in rec_rows:
+        if _recommendation_matches_symbol_policy(r, symbol_policy):
+            fresh_symbols.add(r.symbol)
+
+    for (symbol, intent), refreshed_at in list(_recommendation_refresh_markers.items()):
+        if (now - refreshed_at).total_seconds() > max_age:
+            del _recommendation_refresh_markers[(symbol, intent)]
+            continue
+        current = symbol_policy.get(symbol)
+        if current is not None and current[0] == intent:
+            fresh_symbols.add(symbol)
+
+    stale_symbols = [
+        symbol
+        for symbol in sorted(symbol_policy)
+        if symbol not in fresh_symbols
+    ]
+    if not stale_symbols:
+        return {"refreshed": [], "errors": {}, "refreshing": []}
+
+    to_start = [
+        symbol for symbol in stale_symbols
+        if symbol not in _recommendation_refresh_inflight
+    ]
+    if to_start:
+        _recommendation_refresh_inflight.update(to_start)
+        asyncio.create_task(_refresh_recommendations_background(to_start))
+
+    recent_errors: dict[str, str] = {}
+    for symbol, (failed_at, error) in list(_recommendation_refresh_errors.items()):
+        if (now - failed_at).total_seconds() > max_age:
+            del _recommendation_refresh_errors[symbol]
+            continue
+        if symbol in stale_symbols:
+            recent_errors[symbol] = error
+
+    return {"refreshed": [], "errors": recent_errors, "refreshing": stale_symbols}
+
+
+def _build_dashboard(refresh_status: dict | None = None) -> dict:
     """Aggregate "today at a glance" data: positions needing action + top opps.
 
     Attention list: every live short option whose advice label != HOLD, enriched
     with the same mark/delta the detail page uses (so numbers match). Ordered
     critical → warn → info, then by DTE ascending — nearer expiry first.
 
-    Top opportunities: newest rank-1 Recommendation per symbol from the last
-    24h (matches the alert "opportunity" notion but surfaces the whole top
-    slate, not just those above the push threshold).
+    Top opportunities: newest fresh rank-1 Recommendation per symbol whose
+    recorded intent still matches the symbol's current intent. Older
+    recommendations remain in the feedback log, but they must not be surfaced
+    as actionable after the user changes strategy or after the freshness window.
     """
     today = date.today()
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+    cutoff = _recommendation_cutoff()
     alerts_cfg = load_alerts()
 
     severity_order = {"critical": 0, "warn": 1, "info": 2}
@@ -395,6 +542,14 @@ def _build_dashboard() -> dict:
             .where(Recommendation.generated_at >= cutoff)
             .where(Recommendation.rank == 1)
         ).all()
+        symbol_policy = {
+            symbol: (intent, bool(weekly_ok))
+            for symbol, intent, weekly_ok in session.execute(
+                select(Symbol.symbol, Symbol.intent, Symbol.weekly_ok)
+                .where(Symbol.hidden == False)  # noqa: E712
+            )
+            if is_scannable(intent)
+        }
 
     chain_by_key = {(c.symbol, c.expiry, c.strike, c.right): c for c in chain_rows}
     earnings_by_symbol: dict[str, list[date]] = {}
@@ -447,9 +602,12 @@ def _build_dashboard() -> dict:
         )
     attention.sort(key=lambda r: (severity_order.get(r["severity"], 9), r["dte"]))
 
-    # Top opportunities: keep the newest rank-1 per symbol, rank by annualized_roc.
+    # Top opportunities: keep the newest rank-1 per symbol that still matches
+    # the symbol's current intent, then rank by annualized_roc.
     latest_by_symbol: dict[str, Recommendation] = {}
     for r in recs:
+        if not _recommendation_matches_symbol_policy(r, symbol_policy):
+            continue
         cur = latest_by_symbol.get(r.symbol)
         if cur is None or r.generated_at > cur.generated_at:
             latest_by_symbol[r.symbol] = r
@@ -467,6 +625,9 @@ def _build_dashboard() -> dict:
         "attention": attention,
         "opportunities": opp_rows,
         "roc_threshold": alerts_cfg.roc_threshold_annual,
+        "recommendation_max_age_seconds": get_settings().recommendation_max_age_seconds,
+        "refresh_errors": (refresh_status or {}).get("errors", {}),
+        "refreshing": (refresh_status or {}).get("refreshing", []),
     }
 
 
@@ -672,7 +833,8 @@ async def _validate_ticker(ticker: str) -> bool:
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request) -> HTMLResponse:
     rows = _build_symbol_rows()
-    dash = _build_dashboard()
+    refresh_status = await _refresh_stale_dashboard_recommendations()
+    dash = _build_dashboard(refresh_status)
     return templates.TemplateResponse(
         request,
         "index.html",
@@ -686,8 +848,11 @@ async def index(request: Request) -> HTMLResponse:
 
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard_partial(request: Request) -> HTMLResponse:
+    refresh_status = await _refresh_stale_dashboard_recommendations()
     return templates.TemplateResponse(
-        request, "partials/dashboard.html", {"dashboard": _build_dashboard()}
+        request,
+        "partials/dashboard.html",
+        {"dashboard": _build_dashboard(refresh_status)},
     )
 
 
@@ -811,7 +976,15 @@ async def symbol_create(
             )
         )
 
-    return _list_with_close_modal(request, flash=f"已添加 {symbol}")
+    refresh_status = (
+        await _refresh_recommendations_for_symbols([symbol])
+        if is_scannable(intent)
+        else {"errors": {}}
+    )
+    flash = f"已添加 {symbol}"
+    if refresh_status.get("errors"):
+        flash += "；advisor 刷新失败，暂不展示旧建议"
+    return _list_with_close_modal(request, flash=flash)
 
 
 @app.patch("/symbols/{symbol}", response_class=HTMLResponse)
@@ -855,8 +1028,16 @@ async def symbol_update(
         sym.notes = notes.strip() or None
         sym.preset_overrides = overrides or None
 
+    refresh_status = (
+        await _refresh_recommendations_for_symbols([symbol])
+        if is_scannable(intent)
+        else {"errors": {}}
+    )
+    flash = f"已更新 {symbol}"
+    if refresh_status.get("errors"):
+        flash += "；advisor 刷新失败，暂不展示旧建议"
     return _list_with_close_modal(
-        request, flash=f"已更新 {symbol}", refresh_symbol=symbol
+        request, flash=flash, refresh_symbol=symbol
     )
 
 

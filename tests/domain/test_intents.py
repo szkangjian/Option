@@ -17,6 +17,7 @@ from options_tool.domain.intents import (
     FilterableQuote,
     filter_chain,
     filter_chain_with_reasons,
+    is_monthly_expiry,
     is_scannable,
 )
 from options_tool.settings import IntentPreset
@@ -88,6 +89,22 @@ class TestIntentMetadata:
 
     def test_watch_not_scannable(self):
         assert not is_scannable("WATCH")
+
+
+class TestMonthlyExpiry:
+    def test_regular_third_friday_is_monthly(self):
+        assert is_monthly_expiry(date(2026, 5, 15))
+
+    def test_regular_weekly_is_not_monthly(self):
+        assert not is_monthly_expiry(date(2026, 5, 22))
+
+    def test_juneteenth_adjusted_monthly_is_previous_business_day(self):
+        assert is_monthly_expiry(date(2026, 6, 18))
+        assert not is_monthly_expiry(date(2026, 6, 19))
+
+    def test_good_friday_adjusted_monthly_is_previous_business_day(self):
+        assert is_monthly_expiry(date(2025, 4, 17))
+        assert not is_monthly_expiry(date(2025, 4, 18))
 
 
 class TestFilterChain:
@@ -225,6 +242,27 @@ class TestFilterChainWithReasons:
             chain, preset=INCOME_PRESET, today=TODAY, weekly_ok=False
         )
         assert rejections[0].reason_code == REASON_WEEKLY_NOT_ALLOWED
+
+    def test_holiday_adjusted_monthly_allowed_when_weekly_disabled(self):
+        # 2026-06-19 is Juneteenth, so the standard June monthly last-trading
+        # expiry is Thursday 2026-06-18. It should not require weekly_ok.
+        monthly = date(2026, 6, 18)
+        chain = [
+            FilterableQuote(
+                symbol="TEST",
+                expiry=monthly,
+                strike=100,
+                right="C",
+                bid=1.0,
+                ask=1.1,
+                delta=0.15,
+            )
+        ]
+        survivors, rejections = filter_chain_with_reasons(
+            chain, preset=INCOME_PRESET, today=date(2026, 5, 14), weekly_ok=False
+        )
+        assert len(survivors) == 1
+        assert rejections == []
 
     def test_no_quote_is_tagged(self):
         chain = [make_call(100, bid=0.0, ask=0.0)]

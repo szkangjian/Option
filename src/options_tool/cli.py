@@ -508,7 +508,7 @@ def symbols_set_cmd(
     target: float = typer.Option(None, "--target", help="target_buy_price（仅 WANT_TO_OWN 有意义）"),
     clear_target: bool = typer.Option(False, "--clear-target", help="清空 target_buy_price"),
     wheel: bool = typer.Option(None, "--wheel/--no-wheel", help="开关 wheel_enabled"),
-    weekly: bool = typer.Option(None, "--weekly/--no-weekly", help="是否允许非 3rd-Friday 到期"),
+    weekly: bool = typer.Option(None, "--weekly/--no-weekly", help="是否允许非标准月度到期"),
     hidden: bool = typer.Option(None, "--hide/--unhide"),
     notes: str = typer.Option(None, "--notes"),
     overrides: list[str] = typer.Option(
