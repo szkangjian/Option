@@ -97,6 +97,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="options-tool", lifespan=lifespan)
+# git 不跟踪空目录，fresh clone 时 static/ 不存在 → 兜底
+(WEB_DIR / "static").mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=WEB_DIR / "static"), name="static")
 
 # Read-only JSON API for external integrations (Dexter agent, scripts, etc.).
