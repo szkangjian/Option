@@ -5,10 +5,11 @@
     hx-get="/symbols/new"
     hx-target="#modal-root"
     hx-swap="innerHTML"
+    title="添加新跟踪标的"
   >
-    <span class="text-base leading-none">+</span> Add
+    <span class="text-base leading-none">+</span> 添加
   </button>
-  <label class="text-xs text-slate-600 inline-flex items-center gap-1.5 cursor-pointer select-none">
+  <label class="text-xs text-slate-600 inline-flex items-center gap-1.5 cursor-pointer select-none" title="显示已隐藏的标的">
     <input
       type="checkbox"
       class="rounded border-slate-300"
@@ -18,7 +19,7 @@
       hx-swap="innerHTML"
       hx-vals='js:{show_hidden: event.target.checked ? 1 : 0}'
     />
-    Show hidden
+    显示已隐藏
   </label>
 </div>
 
@@ -47,12 +48,12 @@
           hx-target="#modal-root"
           hx-swap="innerHTML"
           onclick="event.stopPropagation()"
-          title="点击修改 intent"
+          title="点击修改策略"
         >
           {{ s.intent }}
         </button>
         {% if s.wheel %}
-        <span class="text-amber-600 text-xs" title="Wheel enabled">↻</span>
+        <span class="text-amber-600 text-xs" title="启用轮转策略：被接 / 被行权后自动翻转策略">↻</span>
         {% endif %}
         {% if s.needs_target %}
         <button
@@ -62,15 +63,15 @@
           hx-target="#modal-root"
           hx-swap="innerHTML"
           onclick="event.stopPropagation()"
-          title="WANT_TO_OWN 缺 target_buy_price → scanner 被跳过。点此设置。"
+          title="WANT_TO_OWN 策略未设置目标买入价 → 扫描器会跳过。点此设置。"
         >⚠</button>
         {% endif %}
       </span>
 
       <span class="flex items-center gap-2 text-xs text-slate-500 shrink-0">
-        {% if s.qty %}<span title="持股">{{ s.qty|int }}</span>{% endif %}
+        {% if s.qty %}<span title="持股数量">{{ s.qty|int }}</span>{% endif %}
         {% if s.short_opts %}
-        <span class="text-rose-600" title="Short option contracts">
+        <span class="text-rose-600" title="空头期权合约数">
           ✎{{ s.short_opts }}
         </span>
         {% endif %}
@@ -80,9 +81,9 @@
             {% if s.earn_severity == 'high' %}bg-rose-100 text-rose-700
             {% elif s.earn_severity == 'med' %}bg-amber-100 text-amber-700
             {% else %}bg-slate-100 text-slate-600{% endif %}"
-          title="距下次财报"
+          title="距下次财报天数"
         >
-          📉{{ s.dte_earn }}d
+          📉{{ s.dte_earn }}天
         </span>
         {% endif %}
         {% if s.iv_rank is not none %}
@@ -91,9 +92,9 @@
             {% if s.iv_rank >= 0.7 %}bg-rose-100 text-rose-700
             {% elif s.iv_rank >= 0.4 %}bg-amber-100 text-amber-700
             {% else %}bg-slate-100 text-slate-600{% endif %}"
-          title="IV Rank {{ '%.0f'|format(s.iv_rank * 100) }} · IV Percentile {{ '%.0f'|format(s.iv_percentile * 100) }} · 当前 IV30 {{ '%.1f'|format(s.iv_current * 100) }}% · 窗口 {{ s.iv_window }} 天"
+          title="IV 排名 {{ '%.0f'|format(s.iv_rank * 100) }} · IV 分位 {{ '%.0f'|format(s.iv_percentile * 100) }} · 当前 30 日隐含波动率 {{ '%.1f'|format(s.iv_current * 100) }}% · 样本窗口 {{ s.iv_window }} 天"
         >
-          IVR{{ "%.0f"|format(s.iv_rank * 100) }}
+          IV{{ "%.0f"|format(s.iv_rank * 100) }}
         </span>
         {% endif %}
 
@@ -116,7 +117,7 @@
           hx-target="#symbol-list"
           hx-swap="innerHTML"
           onclick="event.stopPropagation()"
-          title="隐藏"
+          title="隐藏该标的"
         >⊘</button>
         {% endif %}
       </span>
@@ -124,7 +125,7 @@
   </li>
   {% else %}
   <li class="px-4 py-6 text-sm text-slate-400 text-center">
-    暂无 symbol。点 <span class="font-mono">+ Add</span> 或 <span class="font-mono">Sync IBKR</span> 自动导入。
+    暂无标的。点 <span class="font-mono">+ 添加</span> 或 <span class="font-mono">同步 IBKR</span> 自动导入。
   </li>
   {% endfor %}
 </ul>

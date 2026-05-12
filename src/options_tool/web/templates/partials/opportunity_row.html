@@ -15,23 +15,23 @@
   </td>
   <td class="px-3 py-1.5">
     <span class="px-1.5 py-0.5 rounded text-[10px] font-medium ring-1 ring-inset {{ o.intent_color }}"
-          title="{% if o.intent == 'INCOME' %}INCOME — 收入流（卖 CC，低 Δ，按年化 ROC 排）{% elif o.intent == 'TRADE' %}TRADE — 交易型 CC（中 Δ，短 DTE，按绝对 premium 排）{% elif o.intent == 'WANT_TO_OWN' %}WANT_TO_OWN — 想低价接应（卖 CSP，strike ≤ target）{% elif o.intent == 'CORE_HOLD' %}CORE_HOLD — 长期持有，不参与卖权扫描{% elif o.intent == 'WATCH' %}WATCH — 只跟踪价格和财报，不扫描{% endif %}">
+          title="{% if o.intent == 'INCOME' %}INCOME 收益流 — 卖备兑看涨，低 Δ，按年化收益排序{% elif o.intent == 'TRADE' %}TRADE 交易型 — 卖备兑看涨，中 Δ，短到期，按权利金绝对值排序{% elif o.intent == 'WANT_TO_OWN' %}WANT_TO_OWN 想接货 — 卖现金担保看跌，行权价 ≤ 目标买入价{% elif o.intent == 'CORE_HOLD' %}CORE_HOLD 长持 — 长期持有，不参与卖权扫描{% elif o.intent == 'WATCH' %}WATCH 仅观察 — 只跟踪价格和财报，不扫描{% endif %}">
       {{ o.intent }}
     </span>
   </td>
   <td class="px-3 py-1.5 font-mono text-xs whitespace-nowrap">
     <span class="px-1 rounded text-[10px] font-semibold bg-rose-100 text-rose-700 mr-1"
-          title="Sell-to-open — 所有候选都是卖开短仓（CC / CSP）">STO</span>
+          title="STO = Sell-To-Open 卖出开仓 — 所有候选都是开新短仓收权利金（备兑看涨 / 现金担保看跌）">STO</span>
     <span class="{% if o.right == 'C' %}text-emerald-700{% else %}text-sky-700{% endif %}"
-          title="{% if o.right == 'C' %}Call — 看涨期权{% else %}Put — 看跌期权{% endif %}">
+          title="{% if o.right == 'C' %}C = Call 看涨期权{% else %}P = Put 看跌期权{% endif %}">
       {{ o.right }}{{ "%g"|format(o.strike) }}
     </span>
     <span class="text-slate-400">{{ o.expiry.isoformat() }}</span>
     {{ info_tip(
-      "<b>STO</b> = Sell-To-Open（卖出开仓）。所有候选都是开新短仓收 premium：<br>"
-      "<b>C</b>(all) = covered call，需要先持 100 股底仓。<br>"
-      "<b>P</b>(ut) = cash-secured put，需冻结 strike × 100 现金作保证金。<br>"
-      "格式：<i>右</i><i>strike</i> <i>到期日</i>，例如 P48 2026-05-15 = 卖出 5 月 15 日到期的 48 行权 put。"
+      "<b>STO</b> = Sell-To-Open 卖出开仓。所有候选都是开新短仓、收权利金：<br>"
+      "<b>C</b>(all) 看涨 = 备兑看涨期权，需先持有 100 股底仓。<br>"
+      "<b>P</b>(ut) 看跌 = 现金担保看跌期权，需冻结 行权价 × 100 现金作担保。<br>"
+      "格式：<i>类型</i><i>行权价</i> <i>到期日</i>，例如 P48 2026-05-15 = 卖出 5 月 15 日到期、行权价 48 美元的看跌期权。"
     ) }}
   </td>
   <td class="text-right px-3 py-1.5 tabular-nums">{{ o.dte }}</td>
@@ -49,7 +49,7 @@
         {% if o.iv_rank >= 0.7 %}bg-rose-100 text-rose-700
         {% elif o.iv_rank >= 0.4 %}bg-amber-100 text-amber-700
         {% else %}bg-slate-100 text-slate-600{% endif %}"
-      title="IV Rank {{ '%.0f'|format(o.iv_rank * 100) }} · IV Percentile {{ '%.0f'|format(o.iv_percentile * 100) }} · 当前 IV30 {{ '%.1f'|format(o.iv_current * 100) }}% · 窗口 {{ o.iv_window }} 天">
+      title="IV 排名 {{ '%.0f'|format(o.iv_rank * 100) }} · IV 分位 {{ '%.0f'|format(o.iv_percentile * 100) }} · 当前 30 日隐含波动率 {{ '%.1f'|format(o.iv_current * 100) }}% · 样本窗口 {{ o.iv_window }} 天">
       {{ "%.0f"|format(o.iv_rank * 100) }}
     </span>
     {% else %}<span class="text-slate-300">—</span>{% endif %}

@@ -4,9 +4,9 @@
   <div class="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 flex items-start gap-3">
     <span class="text-lg leading-none">⚠</span>
     <div class="flex-1">
-      <p class="font-medium">未设置 target_buy_price</p>
+      <p class="font-medium">未设置目标买入价</p>
       <p class="text-xs text-amber-800 mt-0.5">
-        WANT_TO_OWN 需要 target 才能过滤 CSP（strike ≤ target）。scheduler 的 chain 预抓取对该 symbol 当前静默跳过。
+        WANT_TO_OWN（想接货）策略需要目标买入价才能过滤现金担保看跌（行权价 ≤ 目标买入价）。当前定时任务会静默跳过该标的的期权链预取。
       </p>
     </div>
     <button
@@ -15,7 +15,7 @@
       hx-get="/symbols/{{ symbol }}/edit"
       hx-target="#modal-root"
       hx-swap="innerHTML"
-    >设置 target</button>
+    >设置目标价</button>
   </div>
   {% endif %}
   <!-- Header -->
@@ -26,10 +26,10 @@
         {% if spot is not none %}
         <span class="text-2xl font-semibold tabular-nums text-slate-700">${{ "%.2f"|format(spot) }}</span>
         <span class="text-[11px] text-slate-400" title="{{ spot_at.isoformat() if spot_at else '' }}">
-          (cached)
+          （缓存）
         </span>
         {% else %}
-        <span class="text-xs text-slate-400">spot 未缓存 · 点 Run advisor 拉取</span>
+        <span class="text-xs text-slate-400">现价未缓存 · 点"扫描候选"拉取</span>
         {% endif %}
       </div>
       {% if sym %}
@@ -40,12 +40,12 @@
           hx-get="/symbols/{{ symbol }}/edit"
           hx-target="#modal-root"
           hx-swap="innerHTML"
-          title="点击修改 intent"
+          title="点击修改策略"
         >{{ sym.intent }}</button>
-        {% if sym.wheel_enabled %}<span class="text-amber-600">↻ wheel</span>{% endif %}
-        {% if sym.target_buy_price %}<span>· target ${{ "%.2f"|format(sym.target_buy_price) }}</span>{% endif %}
+        {% if sym.wheel_enabled %}<span class="text-amber-600" title="启用轮转策略：被接 / 被行权后自动翻转策略">↻ 轮转</span>{% endif %}
+        {% if sym.target_buy_price %}<span>· 目标买价 ${{ "%.2f"|format(sym.target_buy_price) }}</span>{% endif %}
         {% if next_earnings %}
-        <span class="text-rose-600">· earnings {{ next_earnings.isoformat() }}</span>
+        <span class="text-rose-600" title="下次财报日期">· 财报 {{ next_earnings.isoformat() }}</span>
         {% endif %}
         {% if iv_stats %}
         <span
@@ -53,15 +53,15 @@
             {% if iv_stats.iv_rank >= 0.7 %}bg-rose-100 text-rose-700
             {% elif iv_stats.iv_rank >= 0.4 %}bg-amber-100 text-amber-700
             {% else %}bg-slate-100 text-slate-600{% endif %}"
-          title="IV30 当前 {{ '%.1f'|format(iv_stats.current_iv * 100) }}% · 一年区间 [{{ '%.1f'|format(iv_stats.low * 100) }}%, {{ '%.1f'|format(iv_stats.high * 100) }}%] · 共 {{ iv_stats.window_days }} 天"
-        >IVR {{ "%.0f"|format(iv_stats.iv_rank * 100) }} · IVP {{ "%.0f"|format(iv_stats.iv_percentile * 100) }}</span>
+          title="当前 30 日隐含波动率 {{ '%.1f'|format(iv_stats.current_iv * 100) }}% · 一年区间 [{{ '%.1f'|format(iv_stats.low * 100) }}%, {{ '%.1f'|format(iv_stats.high * 100) }}%] · 样本 {{ iv_stats.window_days }} 天"
+        >IV 排名 {{ "%.0f"|format(iv_stats.iv_rank * 100) }} · IV 分位 {{ "%.0f"|format(iv_stats.iv_percentile * 100) }}</span>
         {% endif %}
         {% if sym.notes %}
         <span class="text-slate-400">— {{ sym.notes }}</span>
         {% endif %}
       </p>
       {% else %}
-      <p class="text-sm text-slate-400 mt-0.5">未跟踪。点左栏 + Add 加入。</p>
+      <p class="text-sm text-slate-400 mt-0.5">未跟踪。点左栏"+ 添加"加入。</p>
       {% endif %}
     </div>
 
@@ -71,8 +71,9 @@
       hx-post="/symbols/{{ symbol }}/advise"
       hx-target="#detail-pane"
       hx-disabled-elt="this"
+      title="按当前策略筛选并排序候选合约"
     >
-      <span>Run advisor</span>
+      <span>扫描候选</span>
       <span class="htmx-indicator spinner"></span>
     </button>
     {% endif %}
@@ -81,16 +82,16 @@
   <!-- Stock holdings -->
   {% if stocks %}
   <section>
-    <h3 class="text-xs uppercase tracking-wide text-slate-500 mb-2">Stock holdings</h3>
+    <h3 class="text-xs uppercase tracking-wide text-slate-500 mb-2">股票持仓</h3>
     <table class="w-full text-sm border border-slate-200 rounded-md overflow-hidden">
       <thead class="bg-slate-50 text-slate-500 text-xs">
         <tr>
-          <th class="text-left px-3 py-1.5 font-medium">Account</th>
-          <th class="text-right px-3 py-1.5 font-medium">Qty</th>
-          <th class="text-right px-3 py-1.5 font-medium">Avg cost</th>
-          <th class="text-right px-3 py-1.5 font-medium" title="Avg cost 减去累计期权净 premium（每股）">Adj cost</th>
-          <th class="text-right px-3 py-1.5 font-medium">Now</th>
-          <th class="text-right px-3 py-1.5 font-medium">P&L%</th>
+          <th class="text-left px-3 py-1.5 font-medium">账户</th>
+          <th class="text-right px-3 py-1.5 font-medium">数量</th>
+          <th class="text-right px-3 py-1.5 font-medium">均价成本</th>
+          <th class="text-right px-3 py-1.5 font-medium" title="均价成本 减去 累计期权净权利金（每股）">调整后成本</th>
+          <th class="text-right px-3 py-1.5 font-medium">现价</th>
+          <th class="text-right px-3 py-1.5 font-medium" title="盈亏百分比">盈亏%</th>
         </tr>
       </thead>
       <tbody>
@@ -101,7 +102,7 @@
           <td class="text-right px-3 py-1.5 tabular-nums">${{ "%.2f"|format(s.avg_cost) }}</td>
           <td class="text-right px-3 py-1.5 tabular-nums
             {% if s.adj_cost is not none %}text-emerald-700 font-medium{% else %}text-slate-400{% endif %}"
-            {% if s.premium_per_share is not none %}title="累计期权 premium ${{ '%.2f'|format(s.premium_per_share) }}/股"{% endif %}>
+            {% if s.premium_per_share is not none %}title="累计期权权利金 ${{ '%.2f'|format(s.premium_per_share) }}/股"{% endif %}>
             {% if s.adj_cost is not none %}${{ "%.2f"|format(s.adj_cost) }}{% else %}—{% endif %}
           </td>
           <td class="text-right px-3 py-1.5 tabular-nums">
@@ -123,23 +124,23 @@
   <!-- Open option positions -->
   {% if opts %}
   <section>
-    <h3 class="text-xs uppercase tracking-wide text-slate-500 mb-2">Open options</h3>
+    <h3 class="text-xs uppercase tracking-wide text-slate-500 mb-2">期权持仓</h3>
     <table class="w-full text-sm border border-slate-200 rounded-md overflow-hidden">
       <thead class="bg-slate-50 text-slate-500 text-xs">
         <tr>
-          <th class="text-left px-3 py-1.5 font-medium">Account</th>
-          <th class="text-left px-3 py-1.5 font-medium">R</th>
-          <th class="text-right px-3 py-1.5 font-medium">Strike</th>
-          <th class="text-right px-3 py-1.5 font-medium" title="spot 相对 strike 偏离 %">vs spot</th>
-          <th class="text-left px-3 py-1.5 font-medium">Expiry</th>
-          <th class="text-right px-3 py-1.5 font-medium">DTE</th>
-          <th class="text-right px-3 py-1.5 font-medium">Qty</th>
-          <th class="text-right px-3 py-1.5 font-medium">Open $</th>
-          <th class="text-right px-3 py-1.5 font-medium">Now $</th>
-          <th class="text-right px-3 py-1.5 font-medium">P&L%</th>
-          <th class="text-right px-3 py-1.5 font-medium">Δ</th>
-          <th class="text-right px-3 py-1.5 font-medium" title="未平仓合约数">OI</th>
-          <th class="text-left px-3 py-1.5 font-medium" title="Position Advisor 建议（hover 看理由）">Action</th>
+          <th class="text-left px-3 py-1.5 font-medium">账户</th>
+          <th class="text-left px-3 py-1.5 font-medium" title="C = Call 看涨 / P = Put 看跌">类型</th>
+          <th class="text-right px-3 py-1.5 font-medium">行权价</th>
+          <th class="text-right px-3 py-1.5 font-medium" title="现价相对行权价的偏离百分比">现价偏离</th>
+          <th class="text-left px-3 py-1.5 font-medium">到期日</th>
+          <th class="text-right px-3 py-1.5 font-medium" title="距到期剩余天数">剩余</th>
+          <th class="text-right px-3 py-1.5 font-medium" title="正数为多头，负数为空头">数量</th>
+          <th class="text-right px-3 py-1.5 font-medium" title="开仓权利金 / 股">开仓 $</th>
+          <th class="text-right px-3 py-1.5 font-medium" title="当前权利金 / 股">现价 $</th>
+          <th class="text-right px-3 py-1.5 font-medium" title="盈亏百分比（空头：现价低于开仓即盈利）">盈亏%</th>
+          <th class="text-right px-3 py-1.5 font-medium" title="Delta — 期权对标的价的敏感度，约等于到期被行权概率">Δ</th>
+          <th class="text-right px-3 py-1.5 font-medium" title="未平仓合约数（OI = Open Interest）">未平仓</th>
+          <th class="text-left px-3 py-1.5 font-medium" title="持仓顾问建议（悬停看完整原因）">建议</th>
         </tr>
       </thead>
       <tbody>
@@ -150,7 +151,7 @@
             <span class="px-1 rounded text-[10px] font-medium
               {% if o.right == 'C' %}bg-emerald-100 text-emerald-700
               {% else %}bg-sky-100 text-sky-700{% endif %}"
-              title="{% if o.right == 'C' %}Call — 看涨期权{% else %}Put — 看跌期权{% endif %}">
+              title="{% if o.right == 'C' %}C = Call 看涨期权{% else %}P = Put 看跌期权{% endif %}">
               {{ o.right }}
             </span>
           </td>
@@ -225,51 +226,51 @@
                 {% if o.assigned_scenario.realized_total is not none %}
                 <span class="ml-2 font-semibold
                   {% if o.assigned_scenario.realized_total > 0 %}text-emerald-700{% else %}text-rose-600{% endif %}">
-                  兑现 ${{ "{:+,.0f}".format(o.assigned_scenario.realized_total) }} ({{ o.assigned_scenario.contracts }} 份)
+                  兑现 ${{ "{:+,.0f}".format(o.assigned_scenario.realized_total) }}（{{ o.assigned_scenario.contracts }} 张）
                 </span>
                 {% endif %}
               </summary>
               <div class="mt-2 text-xs text-slate-600 grid grid-cols-2 gap-x-8 gap-y-1 max-w-2xl">
-                <div class="text-slate-500">若 OOM 到期（保留 premium）</div>
+                <div class="text-slate-500">若虚值到期（保留权利金）</div>
                 <div class="text-right tabular-nums text-emerald-700 font-semibold">
-                  ${{ "%.2f"|format(o.assigned_scenario.oom_kept_per_share) }}/sh
+                  ${{ "%.2f"|format(o.assigned_scenario.oom_kept_per_share) }}/股
                   · 合计 ${{ "{:+,.0f}".format(o.assigned_scenario.oom_kept_total) }}
                 </div>
                 {% if o.right == 'C' %}
                 <div class="text-slate-500">若被行权：有效售价</div>
                 <div class="text-right tabular-nums">
-                  ${{ "%.2f"|format(o.assigned_scenario.effective_price_per_share) }}/sh
+                  ${{ "%.2f"|format(o.assigned_scenario.effective_price_per_share) }}/股
                 </div>
                 {% if o.assigned_scenario.realized_per_share is not none %}
-                <div class="text-slate-500">vs 股票成本 → 兑现 P&L/sh</div>
+                <div class="text-slate-500">对比股票成本 → 兑现盈亏 / 股</div>
                 <div class="text-right tabular-nums font-semibold
                   {% if o.assigned_scenario.realized_per_share > 0 %}text-emerald-700{% else %}text-rose-600{% endif %}">
-                  ${{ "%+.2f"|format(o.assigned_scenario.realized_per_share) }}/sh
+                  ${{ "%+.2f"|format(o.assigned_scenario.realized_per_share) }}/股
                 </div>
                 {% endif %}
                 {% else %}
                 <div class="text-slate-500">若被接：有效接货价</div>
                 <div class="text-right tabular-nums">
-                  ${{ "%.2f"|format(o.assigned_scenario.effective_price_per_share) }}/sh
+                  ${{ "%.2f"|format(o.assigned_scenario.effective_price_per_share) }}/股
                 </div>
                 {% endif %}
               </div>
               {% if o.next_cycle_puts %}
               <div class="mt-3 text-xs text-slate-600">
                 <div class="font-medium mb-1">
-                  假设被行权后，下一轮 CSP 候选
-                  <span class="text-slate-400 font-normal">(PUT, expiry &gt; 本 CC, strike &lt; ${{ "%.2f"|format(o.strike) }})</span>
+                  假设被行权后，下一轮现金担保看跌候选
+                  <span class="text-slate-400 font-normal">（看跌、到期日 &gt; 本备兑看涨、行权价 &lt; ${{ "%.2f"|format(o.strike) }}）</span>
                 </div>
                 <table class="w-full text-xs">
                   <thead class="text-slate-500">
                     <tr>
-                      <th class="text-left px-2 py-1 font-medium">Expiry</th>
-                      <th class="text-right px-2 py-1 font-medium">DTE</th>
-                      <th class="text-right px-2 py-1 font-medium">Strike</th>
-                      <th class="text-right px-2 py-1 font-medium">Mid</th>
-                      <th class="text-right px-2 py-1 font-medium">Δ</th>
-                      <th class="text-right px-2 py-1 font-medium" title="strike − mid：若被接的实际成本/sh">有效接货价</th>
-                      <th class="text-right px-2 py-1 font-medium" title="有效接货价 vs 原股票成本">vs 原成本</th>
+                      <th class="text-left px-2 py-1 font-medium">到期日</th>
+                      <th class="text-right px-2 py-1 font-medium" title="距到期剩余天数">剩余</th>
+                      <th class="text-right px-2 py-1 font-medium">行权价</th>
+                      <th class="text-right px-2 py-1 font-medium" title="买卖中价（bid 与 ask 平均）">中价</th>
+                      <th class="text-right px-2 py-1 font-medium" title="Delta">Δ</th>
+                      <th class="text-right px-2 py-1 font-medium" title="行权价 − 中价：被接货时的实际成本/股">有效接货价</th>
+                      <th class="text-right px-2 py-1 font-medium" title="有效接货价 与 原股票成本 之差">对比原成本</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -302,25 +303,25 @@
           <td colspan="13" class="px-3 py-2">
             <details>
               <summary class="cursor-pointer text-xs text-amber-800 select-none">
-                Roll 候选 · {{ o.roll_candidates|length }} 条
-                <span class="text-slate-500 font-normal">（BTC @ ask ${{ "%.2f"|format(o.roll_candidates[0].close_cost) }} → STO new @ bid）</span>
+                展期候选 · {{ o.roll_candidates|length }} 条
+                <span class="text-slate-500 font-normal">（按"卖一价 ${{ "%.2f"|format(o.roll_candidates[0].close_cost) }} 平旧仓 → 买一价开新仓"估算）</span>
                 {% set top = o.roll_candidates[0] %}
                 {% set total = (top.net_credit * (o.qty|abs) * 100)|round(0, 'floor') %}
                 <span class="ml-2 font-semibold
                   {% if top.net_credit > 0 %}text-emerald-700{% else %}text-rose-700{% endif %}">
-                  最佳净 credit {{ "%+.2f"|format(top.net_credit) }}/sh · 合计 ${{ "{:+,.0f}".format(total) }}（{{ o.qty|abs }} 份）
+                  最佳净收入 {{ "%+.2f"|format(top.net_credit) }}/股 · 合计 ${{ "{:+,.0f}".format(total) }}（{{ o.qty|abs }} 张）
                 </span>
               </summary>
               <table class="mt-2 w-full text-xs">
                 <thead class="text-slate-500">
                   <tr>
-                    <th class="text-left px-2 py-1 font-medium">New expiry</th>
-                    <th class="text-right px-2 py-1 font-medium">DTE</th>
-                    <th class="text-right px-2 py-1 font-medium">Strike</th>
-                    <th class="text-right px-2 py-1 font-medium" title="strike 相对原仓">Δstrike</th>
-                    <th class="text-right px-2 py-1 font-medium">New Δ</th>
-                    <th class="text-right px-2 py-1 font-medium">Open credit</th>
-                    <th class="text-right px-2 py-1 font-medium" title="净收入（开新仓 − 关旧仓）">Net credit</th>
+                    <th class="text-left px-2 py-1 font-medium">新到期日</th>
+                    <th class="text-right px-2 py-1 font-medium" title="距到期剩余天数">剩余</th>
+                    <th class="text-right px-2 py-1 font-medium">行权价</th>
+                    <th class="text-right px-2 py-1 font-medium" title="新行权价 − 原行权价">行权差</th>
+                    <th class="text-right px-2 py-1 font-medium" title="新仓 Delta">新 Δ</th>
+                    <th class="text-right px-2 py-1 font-medium" title="新仓开仓权利金 / 股">开仓收入</th>
+                    <th class="text-right px-2 py-1 font-medium" title="开新仓收入 − 平旧仓成本">净收入</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -356,21 +357,21 @@
   {% if orders %}
   <section>
     <h3 class="text-xs uppercase tracking-wide text-slate-500 mb-2">
-      Pending orders <span class="text-slate-400 normal-case">— 已挂单未成交</span>
+      未成交订单 <span class="text-slate-400 normal-case">— 已挂单等待成交</span>
     </h3>
     <table class="w-full text-sm border border-amber-200 rounded-md overflow-hidden">
       <thead class="bg-amber-50 text-amber-800 text-xs">
         <tr>
-          <th class="text-left px-3 py-1.5 font-medium">Account</th>
-          <th class="text-left px-3 py-1.5 font-medium">Type</th>
-          <th class="text-left px-3 py-1.5 font-medium">Action</th>
-          <th class="text-right px-3 py-1.5 font-medium">Strike</th>
-          <th class="text-left px-3 py-1.5 font-medium">Expiry</th>
-          <th class="text-right px-3 py-1.5 font-medium">DTE</th>
-          <th class="text-right px-3 py-1.5 font-medium">Qty</th>
-          <th class="text-left px-3 py-1.5 font-medium">Order</th>
-          <th class="text-right px-3 py-1.5 font-medium">Limit</th>
-          <th class="text-left px-3 py-1.5 font-medium">Status</th>
+          <th class="text-left px-3 py-1.5 font-medium">账户</th>
+          <th class="text-left px-3 py-1.5 font-medium">类型</th>
+          <th class="text-left px-3 py-1.5 font-medium">方向</th>
+          <th class="text-right px-3 py-1.5 font-medium">行权价</th>
+          <th class="text-left px-3 py-1.5 font-medium">到期日</th>
+          <th class="text-right px-3 py-1.5 font-medium" title="距到期剩余天数">剩余</th>
+          <th class="text-right px-3 py-1.5 font-medium">数量</th>
+          <th class="text-left px-3 py-1.5 font-medium" title="订单类型（LMT 限价 / MKT 市价 等）">订单</th>
+          <th class="text-right px-3 py-1.5 font-medium" title="限价 / 触发价">限价</th>
+          <th class="text-left px-3 py-1.5 font-medium">状态</th>
         </tr>
       </thead>
       <tbody>
@@ -382,15 +383,16 @@
             <span class="px-1 rounded text-[10px] font-medium
               {% if o.right == 'C' %}bg-emerald-100 text-emerald-700
               {% else %}bg-sky-100 text-sky-700{% endif %}"
-              title="{% if o.right == 'C' %}Call — 看涨期权{% else %}Put — 看跌期权{% endif %}">{{ o.right }}</span>
+              title="{% if o.right == 'C' %}C = Call 看涨期权{% else %}P = Put 看跌期权{% endif %}">{{ o.right }}</span>
             {% else %}
-            <span class="px-1 rounded text-[10px] font-medium bg-slate-100 text-slate-600" title="Stock — 股票头寸">STK</span>
+            <span class="px-1 rounded text-[10px] font-medium bg-slate-100 text-slate-600" title="STK = Stock 股票头寸">STK</span>
             {% endif %}
           </td>
           <td class="px-3 py-1.5">
             <span class="px-1 rounded text-[10px] font-medium
               {% if o.action == 'BUY' %}bg-emerald-100 text-emerald-700
-              {% else %}bg-rose-100 text-rose-700{% endif %}">{{ o.action }}</span>
+              {% else %}bg-rose-100 text-rose-700{% endif %}"
+              title="{% if o.action == 'BUY' %}BUY 买入{% else %}SELL 卖出{% endif %}">{{ o.action }}</span>
           </td>
           <td class="text-right px-3 py-1.5 tabular-nums">
             {% if o.strike %}${{ "%.2f"|format(o.strike) }}{% else %}—{% endif %}
@@ -418,15 +420,15 @@
   {% if candidates is not none %}
   <section>
     <h3 class="text-xs uppercase tracking-wide text-slate-500 mb-2">
-      Opening Advisor — top {{ candidates|length }}
+      开仓顾问 — 前 {{ candidates|length }} 名
     </h3>
     {% if advise_source and advise_source != 'ibkr' %}
     <div class="rounded-md border border-rose-300 bg-rose-50 px-4 py-2.5 text-sm text-rose-900 mb-2 flex items-start gap-2">
       <span class="text-base leading-none">⚠</span>
       <div>
-        <span class="font-semibold">数据源已退化：{{ advise_source|upper }}</span>
+        <span class="font-semibold">数据源已降级：{{ advise_source|upper }}</span>
         <span class="text-rose-800">
-          — IB Gateway 不可用，已 fallback 到 Yahoo Finance（~15min 延迟，Δ 由 IV → Black-Scholes 估算）。
+          — IB Gateway 不可用，已回退到 Yahoo Finance（约 15 分钟延迟，Δ 由 IV 经 Black-Scholes 反推）。
           下单前请用 TWS 复核报价。
         </span>
       </div>
@@ -435,7 +437,7 @@
     {% if not candidates and advise_reason %}
     <div class="rounded-md border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-900 mb-2">
       <div>
-        <span class="font-medium">没有候选 ·</span>
+        <span class="font-medium">没有合格候选 ·</span>
         <span class="text-amber-800">{{ advise_reason }}</span>
       </div>
 
@@ -458,10 +460,10 @@
               <thead class="text-amber-700">
                 <tr>
                   <th class="text-left pr-3 py-0.5 font-medium">合约</th>
-                  <th class="text-right pr-3 py-0.5 font-medium">DTE</th>
-                  <th class="text-right pr-3 py-0.5 font-medium">Δ</th>
-                  <th class="text-right pr-3 py-0.5 font-medium">Mid</th>
-                  <th class="text-left py-0.5 font-medium">原因详情</th>
+                  <th class="text-right pr-3 py-0.5 font-medium" title="距到期剩余天数">剩余</th>
+                  <th class="text-right pr-3 py-0.5 font-medium" title="Delta">Δ</th>
+                  <th class="text-right pr-3 py-0.5 font-medium" title="买卖中价">中价</th>
+                  <th class="text-left py-0.5 font-medium">详细原因</th>
                 </tr>
               </thead>
               <tbody class="text-amber-900">
@@ -485,9 +487,9 @@
         {% endfor %}
       </ul>
       <p class="text-xs text-amber-700 mt-2">
-        想放宽，编辑
+        想放宽筛选，编辑
         <code class="bg-amber-100 px-1 rounded">config/intents.yaml</code>
-        对应 intent 的 preset；或在 symbol 详情页修改 per-symbol overrides。
+        中对应策略的 preset；或在标的编辑面板里设置单独的覆盖参数。
       </p>
       {% endif %}
     </div>
@@ -496,15 +498,15 @@
     <table class="w-full text-sm border border-slate-200 rounded-md overflow-hidden">
       <thead class="bg-emerald-50 text-emerald-700 text-xs">
         <tr>
-          <th class="text-right px-3 py-1.5 font-medium">#</th>
-          <th class="text-left px-3 py-1.5 font-medium">R</th>
-          <th class="text-right px-3 py-1.5 font-medium">Strike</th>
-          <th class="text-left px-3 py-1.5 font-medium">Expiry</th>
-          <th class="text-right px-3 py-1.5 font-medium">DTE</th>
-          <th class="text-right px-3 py-1.5 font-medium">Premium</th>
-          <th class="text-right px-3 py-1.5 font-medium">Δ</th>
-          <th class="text-right px-3 py-1.5 font-medium" title="未平仓合约数">OI</th>
-          <th class="text-right px-3 py-1.5 font-medium">ROC%/yr</th>
+          <th class="text-right px-3 py-1.5 font-medium" title="排名">#</th>
+          <th class="text-left px-3 py-1.5 font-medium" title="C = Call 看涨 / P = Put 看跌">类型</th>
+          <th class="text-right px-3 py-1.5 font-medium">行权价</th>
+          <th class="text-left px-3 py-1.5 font-medium">到期日</th>
+          <th class="text-right px-3 py-1.5 font-medium" title="距到期剩余天数">剩余</th>
+          <th class="text-right px-3 py-1.5 font-medium">权利金</th>
+          <th class="text-right px-3 py-1.5 font-medium" title="Delta">Δ</th>
+          <th class="text-right px-3 py-1.5 font-medium" title="未平仓合约数（OI = Open Interest）">未平仓</th>
+          <th class="text-right px-3 py-1.5 font-medium" title="保证金年化收益率">年化收益</th>
         </tr>
       </thead>
       <tbody>
@@ -521,7 +523,7 @@
             <span class="px-1 rounded text-[10px] font-medium
               {% if c.right == 'C' %}bg-emerald-100 text-emerald-700
               {% else %}bg-sky-100 text-sky-700{% endif %}"
-              title="{% if c.right == 'C' %}Call — 看涨期权{% else %}Put — 看跌期权{% endif %}">
+              title="{% if c.right == 'C' %}C = Call 看涨期权{% else %}P = Put 看跌期权{% endif %}">
               {{ c.right }}
             </span>
           </td>
@@ -529,9 +531,9 @@
           <td class="px-3 py-1.5 font-mono text-xs">
             {{ c.expiry.isoformat() }}
             {% if c.is_monthly %}
-            <span class="ml-1 px-1 rounded text-[9px] font-semibold bg-indigo-100 text-indigo-700" title="标准月度期权（遇美股假日则提前到前一交易日）">M</span>
+            <span class="ml-1 px-1 rounded text-[9px] font-semibold bg-indigo-100 text-indigo-700" title="M = Monthly 标准月度期权（遇美股假日则提前到前一交易日）">M</span>
             {% else %}
-            <span class="ml-1 px-1 rounded text-[9px] font-medium bg-slate-100 text-slate-500" title="周/非月度期权">W</span>
+            <span class="ml-1 px-1 rounded text-[9px] font-medium bg-slate-100 text-slate-500" title="W = Weekly 周度 / 非月度期权">W</span>
             {% endif %}
           </td>
           <td class="text-right px-3 py-1.5">{{ c.dte }}</td>
@@ -541,29 +543,29 @@
              Tooltip still carries the full breakdown for power users. #}
           <td class="text-right px-3 py-1.5 tabular-nums whitespace-nowrap"
               title="{% if c.quote_source == 'mid' -%}
-                bid ${{ '%.2f'|format(c.bid) }} / ask ${{ '%.2f'|format(c.ask) }} → mid ${{ '%.2f'|format(c.premium) }}
-                {%- if c.spread_pct is not none %} · spread ${{ '%.2f'|format(c.spread) }} ({{ '%.0f'|format(c.spread_pct * 100) }}%){% endif %}
+                买价 ${{ '%.2f'|format(c.bid) }} / 卖价 ${{ '%.2f'|format(c.ask) }} → 中价 ${{ '%.2f'|format(c.premium) }}
+                {%- if c.spread_pct is not none %} · 价差 ${{ '%.2f'|format(c.spread) }}（{{ '%.0f'|format(c.spread_pct * 100) }}%){% endif %}
               {%- else -%}
-                last ${{ '%.2f'|format(c.premium) }} · 无 live bid/ask（盘后或流动性稀薄）
+                成交价 ${{ '%.2f'|format(c.premium) }} · 暂无实时买卖盘（盘后或流动性稀薄）
               {%- endif %}">
             <div class="font-medium">
               ${{ "%.2f"|format(c.premium) }}
               {% if is_wide %}
-              <span class="ml-1 px-1 rounded text-[9px] font-semibold bg-amber-200 text-amber-900">
+              <span class="ml-1 px-1 rounded text-[9px] font-semibold bg-amber-200 text-amber-900" title="买卖价差过大（&gt; 30%），流动性差，慎挂单">
                 ⚠ {{ "%.0f"|format(c.spread_pct * 100) }}%
               </span>
               {% elif c.quote_source == 'last' %}
-              <span class="ml-1 px-1 rounded text-[9px] font-medium bg-slate-100 text-slate-500">
+              <span class="ml-1 px-1 rounded text-[9px] font-medium bg-slate-100 text-slate-500" title="L = Last 仅有最近成交价，无实时买卖盘">
                 L
               </span>
               {% endif %}
             </div>
             {% if c.quote_source == 'mid' %}
-            <div class="text-[10px] text-slate-400 font-normal">
+            <div class="text-[10px] text-slate-400 font-normal" title="买价 / 卖价">
               {{ "%.2f"|format(c.bid) }} / {{ "%.2f"|format(c.ask) }}
             </div>
             {% else %}
-            <div class="text-[10px] text-slate-400 font-normal italic">last only</div>
+            <div class="text-[10px] text-slate-400 font-normal italic">仅成交价</div>
             {% endif %}
           </td>
           <td class="text-right px-3 py-1.5 tabular-nums">
@@ -583,10 +585,10 @@
       </tbody>
     </table>
     <p class="text-xs text-slate-400 mt-2">
-      Underlying ≈ ${{ "%.2f"|format(candidates[0].underlying_price) }} · run at request time
+      标的现价 ≈ ${{ "%.2f"|format(candidates[0].underlying_price) }} · 本次请求实时计算
     </p>
     {% else %}
-    <p class="text-sm text-slate-500">No qualifying candidates. Try widening the intent preset.</p>
+    <p class="text-sm text-slate-500">没有合格候选。试试放宽该策略的筛选条件。</p>
     {% endif %}
   </section>
   {% endif %}

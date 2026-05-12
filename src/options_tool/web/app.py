@@ -960,7 +960,7 @@ async def symbol_create(
     target = _parse_float(target_buy_price)
     if intent == "WANT_TO_OWN" and target is None:
         return _form_error(
-            request, "create", symbol, intent, "WANT_TO_OWN 需要 target_buy_price",
+            request, "create", symbol, intent, "WANT_TO_OWN 策略需要设置目标买入价",
             preset_overrides=overrides,
         )
 
@@ -985,7 +985,7 @@ async def symbol_create(
     )
     flash = f"已添加 {symbol}"
     if refresh_status.get("errors"):
-        flash += "；advisor 刷新失败，暂不展示旧建议"
+        flash += "；候选刷新失败，暂不展示旧建议"
     return _list_with_close_modal(request, flash=flash)
 
 
@@ -1001,7 +1001,7 @@ async def symbol_update(
 ) -> HTMLResponse:
     symbol = symbol.upper()
     if intent not in INTENT_VALUES:
-        return _form_error(request, "edit", symbol, intent, "未知 intent")
+        return _form_error(request, "edit", symbol, intent, "未知策略")
     raw_form = dict(await request.form())
     try:
         overrides = _parse_overrides_from_form(raw_form)
@@ -1016,7 +1016,7 @@ async def symbol_update(
     target = _parse_float(target_buy_price)
     if intent == "WANT_TO_OWN" and target is None:
         return _form_error(
-            request, "edit", symbol, intent, "WANT_TO_OWN 需要 target_buy_price",
+            request, "edit", symbol, intent, "WANT_TO_OWN 策略需要设置目标买入价",
             preset_overrides=overrides,
         )
     with session_scope() as session:
@@ -1037,7 +1037,7 @@ async def symbol_update(
     )
     flash = f"已更新 {symbol}"
     if refresh_status.get("errors"):
-        flash += "；advisor 刷新失败，暂不展示旧建议"
+        flash += "；候选刷新失败，暂不展示旧建议"
     return _list_with_close_modal(
         request, flash=flash, refresh_symbol=symbol
     )

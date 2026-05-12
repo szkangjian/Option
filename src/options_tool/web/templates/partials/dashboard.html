@@ -14,7 +14,7 @@
      {% endif %}>
   {% if dashboard.refreshing %}
   <div class="text-xs rounded-md border border-sky-200 bg-sky-50 text-sky-800 px-3 py-2">
-    正在刷新过期 rank-1；刷新完成前不展示旧建议：
+    正在刷新过期的头号建议；刷新完成前不展示旧建议：
     {% for symbol in dashboard.refreshing %}
       <span class="font-mono font-semibold">{{ symbol }}</span>{% if not loop.last %}, {% endif %}
     {% endfor %}
@@ -23,7 +23,7 @@
 
   {% if dashboard.refresh_errors %}
   <div class="text-xs rounded-md border border-amber-200 bg-amber-50 text-amber-800 px-3 py-2">
-    部分 opportunity 刷新失败，已隐藏过期 rank-1；这些标的暂不用于决策：
+    部分标的刷新失败，已隐藏过期头号建议；这些标的暂不用于决策：
     {% for symbol, error in dashboard.refresh_errors.items() %}
       <span class="font-mono font-semibold">{{ symbol }}</span>{% if not loop.last %}, {% endif %}
     {% endfor %}
@@ -34,7 +34,7 @@
     <h2 class="text-sm font-semibold text-slate-700 mb-2 flex items-center gap-2">
       <span>需要关注的持仓</span>
       <span class="text-xs font-normal text-slate-400">
-        {% if dashboard.attention %}{{ dashboard.attention|length }} 条{% else %}全部 HOLD{% endif %}
+        {% if dashboard.attention %}{{ dashboard.attention|length }} 条{% else %}全部持有不动{% endif %}
       </span>
     </h2>
     {% if dashboard.attention %}
@@ -42,31 +42,31 @@
       <thead class="bg-slate-50 text-slate-500 text-xs">
         <tr>
           <th class="text-left px-3 py-1.5 font-medium whitespace-nowrap">
-            Action
+            建议
             {{ info_tip(
-              "Position Advisor 给每个 short option 的建议（按优先级，先匹配先返回）：<br>"
-              "<b>CLOSE</b> 已衰减 ≥ 80% — 利润大头到手，剩下不值再扛。<br>"
-              "<b>ROLL</b> 财报冲突 / Δ critical / 临近到期且 Δ warn — 防御性展期。<br>"
-              "<b>STOP_LOSS</b> 当前 mark ≥ 2× 开仓 premium — 已亏过标准风险预算，自行决定。<br>"
-              "<b>HOLD</b> 没有触发任何规则。"
+              "持仓顾问对每张已开短仓给出的建议（按优先级，先命中先返回）：<br>"
+              "<b>CLOSE</b> 平仓 — 权利金已衰减 ≥ 80%，利润大头到手，剩下不值再扛。<br>"
+              "<b>ROLL</b> 展期 — 撞上财报 / Δ 进危险区 / 临近到期且 Δ 偏高，做防御性展期。<br>"
+              "<b>STOP_LOSS</b> 止损 — 当前现价 ≥ 2× 开仓权利金，已超出标准风险预算。<br>"
+              "<b>HOLD</b> 持有 — 未触发任何规则。"
             ) }}
           </th>
-          <th class="text-left px-3 py-1.5 font-medium">Symbol</th>
-          <th class="text-left px-3 py-1.5 font-medium">Account</th>
-          <th class="text-left px-3 py-1.5 font-medium">Leg</th>
+          <th class="text-left px-3 py-1.5 font-medium">标的</th>
+          <th class="text-left px-3 py-1.5 font-medium">账户</th>
+          <th class="text-left px-3 py-1.5 font-medium">合约</th>
           <th class="text-right px-3 py-1.5 font-medium whitespace-nowrap">
-            DTE
-            {{ info_tip("Days To Expiry — 距到期还有几天。短 DTE (≤ 7) 会让 50% 利润 / Δ 警告升级成行动信号。") }}
+            剩余天数
+            {{ info_tip("距到期还剩多少天（DTE = Days To Expiry）。剩余 ≤ 7 天会让 50% 利润 / Δ 警告升级成行动信号。") }}
           </th>
           <th class="text-right px-3 py-1.5 font-medium whitespace-nowrap">
             Δ
             {{ info_tip(
-              "Delta —  期权价格对标的价格变动 1 美元的敏感度，也粗略等于到期被行权的概率。<br>"
-              "卖方角度：|Δ| 越高，越接近 ATM，越危险。<br>"
-              "工具阈值：warn 0.40，critical 0.50。"
+              "Delta — 期权价格对标的价格变动 1 美元的敏感度，也粗略等于到期被行权的概率。<br>"
+              "卖方角度：|Δ| 越高，越接近平值，越危险。<br>"
+              "工具阈值：警戒 0.40，危险 0.50。"
             ) }}
           </th>
-          <th class="text-left px-3 py-1.5 font-medium">Reason</th>
+          <th class="text-left px-3 py-1.5 font-medium">原因</th>
         </tr>
       </thead>
       <tbody>
@@ -92,7 +92,7 @@
           <td class="px-3 py-1.5 font-mono text-xs">
             <span class="
               {% if a.right == 'C' %}text-emerald-700{% else %}text-sky-700{% endif %}"
-              title="{% if a.right == 'C' %}Call — 看涨期权{% else %}Put — 看跌期权{% endif %}">
+              title="{% if a.right == 'C' %}C = Call 看涨期权{% else %}P = Put 看跌期权{% endif %}">
               {{ a.right }}{{ "%g"|format(a.strike) }}
             </span>
             <span class="text-slate-400">{{ a.expiry.isoformat() }}</span>
@@ -108,62 +108,62 @@
     </table>
     {% else %}
     <div class="text-xs text-slate-400 border border-dashed border-slate-200 rounded-md px-4 py-6 text-center">
-      当前所有短仓均为 HOLD，没事。
+      当前所有短仓建议均为持有不动，无须操作。
     </div>
     {% endif %}
   </div>
 
   <div>
     <h2 class="text-sm font-semibold text-slate-700 mb-2 flex items-center gap-2">
-      <span>Top opportunities</span>
+      <span>热门机会候选</span>
       <span class="text-xs font-normal text-slate-400">
-        当前 intent 匹配 · {{ (dashboard.recommendation_max_age_seconds / 60)|round(0, 'ceil')|int }}m 内刷新 · rank-1 · 推送阈值 {{ (dashboard.roc_threshold * 100)|round(0, 'floor')|int }}% 年化
+        匹配当前策略 · {{ (dashboard.recommendation_max_age_seconds / 60)|round(0, 'ceil')|int }} 分钟内刷新 · 仅取头号建议 · 推送阈值 {{ (dashboard.roc_threshold * 100)|round(0, 'floor')|int }}% 年化
       </span>
     </h2>
     {% if dashboard.opportunities %}
     <table class="w-full text-sm border border-slate-200 rounded-md overflow-hidden">
       <thead class="bg-slate-50 text-slate-500 text-xs">
         <tr>
-          <th class="text-left px-3 py-1.5 font-medium">Symbol</th>
+          <th class="text-left px-3 py-1.5 font-medium">标的</th>
           <th class="text-left px-3 py-1.5 font-medium whitespace-nowrap">
-            Intent
+            策略
             {{ info_tip(
-              "每只标的的策略意图，决定 Opening Advisor 用哪套 filter preset：<br>"
-              "<b>INCOME</b> 收 CC，Δ ≤ 0.20，DTE 30–45，按年化 ROC 排。<br>"
-              "<b>TRADE</b> 收 CC，Δ 0.25–0.35，DTE 7–21，按绝对 premium 排。<br>"
-              "<b>WANT_TO_OWN</b> 卖 CSP，strike ≤ target，Δ ≤ 0.30，DTE 21–45。<br>"
-              "<b>CORE_HOLD</b> / <b>WATCH</b> 不进 advisor 扫描。"
+              "每只标的的策略意图，决定开仓顾问用哪套筛选条件：<br>"
+              "<b>INCOME</b> 收益流 — 卖备兑看涨，Δ ≤ 0.20，剩余 30–45 天，按年化收益排序。<br>"
+              "<b>TRADE</b> 交易型 — 卖备兑看涨，Δ 0.25–0.35，剩余 7–21 天，按权利金绝对值排序。<br>"
+              "<b>WANT_TO_OWN</b> 想接货 — 卖现金担保看跌，行权价 ≤ 目标买价，Δ ≤ 0.30，剩余 21–45 天。<br>"
+              "<b>CORE_HOLD</b> 长持 / <b>WATCH</b> 仅观察 — 不进入扫描。"
             ) }}
           </th>
-          <th class="text-left px-3 py-1.5 font-medium">Leg</th>
-          <th class="text-right px-3 py-1.5 font-medium">DTE</th>
-          <th class="text-right px-3 py-1.5 font-medium">Δ</th>
-          <th class="text-right px-3 py-1.5 font-medium">Premium</th>
+          <th class="text-left px-3 py-1.5 font-medium">合约</th>
+          <th class="text-right px-3 py-1.5 font-medium" title="距到期剩余天数">剩余</th>
+          <th class="text-right px-3 py-1.5 font-medium" title="Delta — 期权对标的价的敏感度，约等于到期被行权概率">Δ</th>
+          <th class="text-right px-3 py-1.5 font-medium">权利金</th>
           <th class="text-right px-3 py-1.5 font-medium whitespace-nowrap">
-            年化 ROC
+            年化收益
             {{ info_tip(
-              "Annualized Return on Collateral。<br>"
-              "CC：premium / strike × (365 / DTE)。<br>"
-              "CSP：premium / (strike × 100) × (365 / DTE)。<br>"
+              "保证金的年化收益率（Annualized Return on Collateral）。<br>"
+              "备兑看涨：权利金 / 行权价 × (365 / 剩余天数)。<br>"
+              "现金担保看跌：权利金 / (行权价 × 100) × (365 / 剩余天数)。<br>"
               "推送阈值见副标题（默认 40%）。"
             ) }}
           </th>
           <th class="text-right px-3 py-1.5 font-medium whitespace-nowrap">
-            IVR
+            IV 排名
             {{ info_tip(
-              "IV Rank — 一年窗口内当前 IV30 的相对位置 (0–100)。<br>"
-              "<b>≥ 70</b> 高，premium 贵，特别适合卖权。<br>"
+              "IV Rank — 一年窗口内当前 IV30 的相对位置（0–100）。<br>"
+              "<b>≥ 70</b> 偏高 — 权利金贵，最适合卖权。<br>"
               "<b>40–70</b> 中等。<br>"
-              "<b>&lt; 40</b> 低，谨慎卖权（可能不值得占用保证金）。"
+              "<b>&lt; 40</b> 偏低 — 谨慎卖权（可能不值得占用保证金）。"
             ) }}
           </th>
           <th class="text-right px-3 py-1.5 font-medium whitespace-nowrap">
             反馈
             {{ info_tip(
               "记录你对每条候选的处理：<br>"
-              "<b>采纳</b> = 你按这条建议下了单（或近似）。<br>"
+              "<b>采纳</b> = 你按这条建议下了单（或接近）。<br>"
               "<b>忽略</b> = 你看过但决定不做。<br>"
-              "未来用来做 scoring 回测：你忽略的候选实际上盈利率多少？"
+              "之后会用来回测打分：被忽略的候选最后真的能赚吗？"
             ) }}
           </th>
         </tr>
@@ -176,7 +176,7 @@
     </table>
     {% else %}
     <div class="text-xs text-slate-400 border border-dashed border-slate-200 rounded-md px-4 py-6 text-center">
-      24h 内尚无 rank-1 记录 —— 等 prefetch 跑一轮。
+      24 小时内还没有头号建议 —— 等定时预取任务跑完一轮。
     </div>
     {% endif %}
   </div>

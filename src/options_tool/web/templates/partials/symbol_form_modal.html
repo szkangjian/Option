@@ -5,7 +5,7 @@
     intentDefaults: {{ intent_defaults | tojson }},
     placeholder(field) {
       const d = this.intentDefaults[this.intent];
-      return d && d[field] !== "" ? "默认 " + d[field] : "（intent 不使用此项）";
+      return d && d[field] !== "" ? "默认 " + d[field] : "（当前策略不用该项）";
     },
   }'
   @click.self="document.getElementById('modal-root').innerHTML=''"
@@ -14,7 +14,7 @@
   <div class="bg-white rounded-lg shadow-xl w-full max-w-md mx-4 overflow-hidden">
     <div class="px-5 py-3 border-b border-slate-200 flex items-center justify-between">
       <h3 class="text-sm font-semibold tracking-tight">
-        {% if mode == 'create' %}添加 Symbol{% else %}编辑 {{ sym.symbol }}{% endif %}
+        {% if mode == 'create' %}添加跟踪标的{% else %}编辑 {{ sym.symbol }}{% endif %}
       </h3>
       <button
         type="button"
@@ -42,7 +42,7 @@
 
       <!-- Symbol -->
       <div>
-        <label class="block text-xs font-medium text-slate-600 mb-1">Symbol</label>
+        <label class="block text-xs font-medium text-slate-600 mb-1">代码</label>
         <input
           name="symbol"
           type="text"
@@ -57,7 +57,7 @@
 
       <!-- Intent -->
       <div>
-        <label class="block text-xs font-medium text-slate-600 mb-1">Intent</label>
+        <label class="block text-xs font-medium text-slate-600 mb-1">策略</label>
         <select
           name="intent"
           x-model="intent"
@@ -68,14 +68,14 @@
           {% endfor %}
         </select>
         <p class="text-[11px] text-slate-400 mt-1">
-          INCOME / TRADE 需持仓 · WANT_TO_OWN 需 target_buy_price · WATCH / CORE_HOLD 不进 scanner
+          INCOME / TRADE 需先有持仓 · WANT_TO_OWN 需设目标买入价 · WATCH / CORE_HOLD 不进入扫描
         </p>
       </div>
 
       <!-- Target buy price (only meaningful for WANT_TO_OWN) -->
       <div x-show="intent === 'WANT_TO_OWN'" x-transition>
         <label class="block text-xs font-medium text-slate-600 mb-1">
-          Target buy price <span class="text-rose-500">*</span>
+          目标买入价 <span class="text-rose-500">*</span>
         </label>
         <input
           name="target_buy_price"
@@ -98,7 +98,7 @@
             {% if sym and sym.wheel_enabled %}checked{% endif %}
             class="rounded border-slate-300"
           />
-          <span>Wheel ↻ 自动翻转 intent（CSP 接 → INCOME；CC 行权 → WANT_TO_OWN）</span>
+          <span>启用轮转策略 ↻：自动翻转策略（CSP 被接 → INCOME；CC 被行权 → WANT_TO_OWN）</span>
         </label>
       </div>
 
@@ -112,7 +112,7 @@
             {% if sym and sym.weekly_ok %}checked{% endif %}
             class="rounded border-slate-300"
           />
-          <span>允许周期权（仅流动性好的标的勾选；默认只看标准月度到期）</span>
+          <span>允许周度期权（仅流动性好的标的建议勾选；默认只看标准月度到期）</span>
         </label>
       </div>
 
@@ -131,12 +131,12 @@
       {% set overrides = (sym.preset_overrides if sym and sym.preset_overrides else {}) %}
       <details class="border border-slate-200 rounded-md" {% if overrides %}open{% endif %}>
         <summary class="cursor-pointer px-3 py-2 text-xs font-medium text-slate-700 select-none flex items-center justify-between">
-          <span>Preset overrides
-            <span class="text-slate-400 font-normal">— 留空 = 用 intent 默认值</span>
+          <span>单标的参数覆盖
+            <span class="text-slate-400 font-normal">— 留空 = 用所选策略的默认值</span>
           </span>
           {% if overrides %}
           <span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-800">
-            {{ overrides|length }} 项已覆盖
+            已覆盖 {{ overrides|length }} 项
           </span>
           {% endif %}
         </summary>
@@ -156,8 +156,8 @@
           {% endfor %}
         </div>
         <p class="px-3 pb-3 text-[10px] text-slate-400 leading-snug">
-          只覆盖 filter 类参数（delta / dte / strike 窗口 / top_n）。
-          intent-defining 字段（side / rank_by）和项目级硬规则（exclude_earnings_dte）不可改。
+          只能覆盖筛选类参数（Δ 区间 / 剩余天数 / 行权价窗口 / 取前 N 名）。
+          策略定义字段（看涨/看跌方向、排序规则）和项目级硬规则（排除跨财报合约）不可改。
         </p>
       </details>
 

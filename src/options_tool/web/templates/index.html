@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>options-tool</title>
+  <title>期权助手</title>
   <script src="https://unpkg.com/htmx.org@2.0.3"></script>
   <script defer src="https://unpkg.com/alpinejs@3.14.1"></script>
   <script src="https://cdn.tailwindcss.com"></script>
@@ -47,7 +47,7 @@
   <header class="border-b border-slate-200 bg-white">
     <div class="px-4 py-3 flex items-center justify-between">
       <h1 class="text-base font-semibold tracking-tight">
-        options-tool <span class="text-slate-400 font-normal">— IBKR CC/CSP advisor</span>
+        期权助手 <span class="text-slate-400 font-normal">— IBKR 备兑看涨 / 现金担保看跌 顾问</span>
       </h1>
       <div class="flex items-center gap-3">
         <button
@@ -55,8 +55,9 @@
           hx-post="/sync-positions"
           hx-target="#symbol-list"
           hx-disabled-elt="this"
+          title="从 IB Gateway 拉取最新持仓 / 订单 / 财报"
         >
-          <span>Sync IBKR</span>
+          <span>同步 IBKR</span>
           <span class="htmx-indicator spinner"></span>
         </button>
       </div>
